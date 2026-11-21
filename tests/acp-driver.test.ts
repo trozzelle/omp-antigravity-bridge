@@ -41,6 +41,8 @@ async function runDriver(
 		usageEstimate?: "estimate" | "direct" | "off";
 		onPermissionRequest?: AcpPermissionHandler;
 		permissionParkMs?: number;
+		permissionPolicy?: () => "auto" | "deny";
+		gateActive?: () => boolean;
 		signal?: AbortSignal;
 		log?: (msg: string, data?: unknown) => void;
 		onHandle?: (
@@ -58,6 +60,8 @@ async function runDriver(
 		usageEstimate: opts.usageEstimate,
 		onPermissionRequest: opts.onPermissionRequest,
 		permissionParkMs: opts.permissionParkMs,
+		permissionPolicy: opts.permissionPolicy,
+		gateActive: opts.gateActive,
 		log: opts.log ?? (() => {}),
 	});
 	const activities: DriverActivity[] = [];
@@ -295,6 +299,112 @@ describe("acp/driver permission policy", () => {
 			_permissionAnswer: string;
 		};
 		assert.equal(answer._permissionAnswer, "deny");
+	});
+});
+
+describe("acp/driver permission policy with the approval gate active", () => {
+	// The approval gate is only a PreToolUse hook; agy can still ask its own
+	// permission afterwards. While the gate is staged, skipPermissions must
+	// not widen the answer: the standing approvals policy decides.
+	const answerOf = (run: DriverRun): string | undefined =>
+		(sentRequests(run._logPath) as Array<{ _permissionAnswer?: string }>).find(
+			(r) => r._permissionAnswer !== undefined,
+		)?._permissionAnswer;
+
+	test("gate active + skipPermissions + policy deny answers deny", async () => {
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			gateActive: () => true,
+			permissionPolicy: () => "deny",
+		});
+		assert.equal((await run.handle.outcome).status, "OK");
+		assert.equal(answerOf(run), "deny");
+	});
+
+	test("gate active + skipPermissions + policy auto (approvals.mode allow) answers allow", async () => {
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			gateActive: () => true,
+			permissionPolicy: () => "auto",
+		});
+		assert.equal((await run.handle.outcome).status, "OK");
+		assert.equal(answerOf(run), "allow");
+	});
+
+	test("gate active without any policy fails closed", async () => {
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			gateActive: () => true,
+		});
+		assert.equal((await run.handle.outcome).status, "OK");
+		assert.equal(answerOf(run), "deny");
+	});
+
+	test("gate inactive + skipPermissions still auto-allows without consulting the policy", async () => {
+		let policyCalls = 0;
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			gateActive: () => false,
+			permissionPolicy: () => {
+				policyCalls += 1;
+				return "deny";
+			},
+		});
+		assert.equal((await run.handle.outcome).status, "OK");
+		assert.equal(answerOf(run), "allow");
+		assert.equal(policyCalls, 0);
+	});
+
+	test("gate active + policy deny parks on the human handler (ask/inherit)", async () => {
+		let calls = 0;
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			gateActive: () => true,
+			permissionPolicy: () => "deny",
+			onPermissionRequest: async () => {
+				calls += 1;
+				return "allow";
+			},
+		});
+		assert.equal((await run.handle.outcome).status, "OK");
+		assert.equal(calls, 1);
+		assert.equal(answerOf(run), "allow");
+	});
+
+	test("gate active + handler esc (headless/mode deny) answers deny", async () => {
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			gateActive: () => true,
+			permissionPolicy: () => "deny",
+			onPermissionRequest: async () => undefined,
+		});
+		assert.equal((await run.handle.outcome).status, "OK");
+		assert.equal(answerOf(run), "deny");
+	});
+
+	interface PermissionLogData {
+		tool?: { kind?: string; title?: string; toolCallId?: string };
+	}
+
+	test("the permission log event carries the tool identity", async () => {
+		const events: Array<{ msg: string; data: unknown }> = [];
+		const run = await tracked("permission", {
+			prompt: "make the file",
+			skipPermissions: true,
+			log: (msg, data) => events.push({ msg, data }),
+		});
+		assert.equal((await run.handle.outcome).status, "OK");
+		const ev = events.find((e) => e.msg === "permission")?.data as PermissionLogData | undefined;
+		assert.ok(ev?.tool, "permission event has a tool identity");
+		assert.equal(ev.tool.kind, "edit");
+		assert.equal(ev.tool.title, "Run create_file?");
+		assert.equal(ev.tool.toolCallId, "t1");
 	});
 });
 

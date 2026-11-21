@@ -16,7 +16,10 @@
 //     synchronously; otherwise an optional human handler (extension dialog)
 //     PARKS the request with the turn budget paused; no handler = deny
 //     fail-closed. Approvals-mode parity: a permissionPolicy override maps
-//     approvals.mode allow to the same synchronous auto path
+//     approvals.mode allow to the same synchronous auto path. While the
+//     approval gate is staged (gateActive) skipPermissions never widens the
+//     answer: the gate hooks do not stop agy's own permission path, so the
+//     standing policy decides (allow auto, otherwise handler or deny)
 
 import { randomUUID } from "node:crypto";
 import type { UsageEstimate } from "../config.js";
@@ -59,10 +62,17 @@ export interface AcpDriverOptions {
 	onPermissionRequest?: AcpPermissionHandler;
 	/** Park budget for one permission dialog (tests shrink it). */
 	permissionParkMs?: number;
-	/** Standing policy consulted when the turn is not skipPermissions:
-	 *  "auto" answers the first allow option synchronously, "deny" consults
-	 *  the human handler or fail-closes. Default deny. */
+	/** Standing policy consulted when the turn is not skipPermissions, or
+	 *  skipPermissions is overridden by gateActive: "auto" answers the first
+	 *  allow option synchronously, "deny" consults the human handler or
+	 *  fail-closes. Default deny. */
 	permissionPolicy?: () => "auto" | "deny";
+	/** True while the approval gate is staged for this session (hooks
+	 *  delivered). agy's own request_permission is a second path to the same
+	 *  tool, so a gate-active turn ignores skipPermissions: permissionPolicy
+	 *  decides ("auto" allow, "deny" handler or fail-closed). Absent or false
+	 *  keeps skipPermissions answering allow. */
+	gateActive?: () => boolean;
 	/** Timeout in ms for session/new, session/load, set_config_option, and
 	 *  session/close. Defaults to AcpConnection's 20000ms. */
 	sessionOpTimeoutMs?: number | (() => number);
@@ -626,11 +636,12 @@ export class AcpDriver implements TurnDriver {
 			cwd: request.cwd,
 			mcpServers: this.#opts.mcpServers,
 			log: (msg, data) => this.#log(msg, data),
-			// Fail-closed permissions: skipPermissions answers allow; a standing
-			// policy override (approvals.mode allow) may widen that; everything
+			// Fail-closed permissions: skipPermissions answers allow unless the
+			// approval gate is active; then (and for non-skip turns) a standing
+			// policy decides (approvals.mode allow widens to auto), everything
 			// else goes to the human handler or denies.
 			permissions: () =>
-				this.#active?.request.skipPermissions
+				this.#active?.request.skipPermissions && !this.#opts.gateActive?.()
 					? "auto"
 					: (this.#opts.permissionPolicy?.() ?? "deny"),
 			onPermissionRequest: this.#opts.onPermissionRequest
