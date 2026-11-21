@@ -992,7 +992,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const skills: SkillLite[] = sessionSkills(pi, ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {}, {
 			systemPrompt: () => ctx.getSystemPrompt(),
 		});
-		bridgeSkillCount = skills.length;
 		const listTools = () => {
 			// /mcp and pi.setActiveTools() update the same live catalog. ACP gets
 			// this endpoint through session/new or session/load; no global config write.
@@ -1102,6 +1101,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			: piAttachResult(await startMcpServer(bridgeDeps, { log: mcpLog }));
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
+			// activate_skill exists only once the bridge serves it.
+			bridgeSkillCount = skills.length;
 			// Entries a crashed delegation left suppressed are healed here,
 			// but only when no live delegation is in
 			// flight anywhere (marker-aware heal). A blind re-enable used to
