@@ -1,12 +1,16 @@
 import type { BridgeTools } from "./config.js";
 import { POLL_TOOL_NAME } from "./provider.js";
 import { ACTIVATE_SKILL_TOOL_NAME } from "./skills.js";
+import { isOmpHarnessTool, isOmpMcpTool } from "./omp/tool-catalog.js";
+import { toPlainJsonSchema } from "./omp/tool-schema.js";
 
 export interface BridgeToolInfo {
 	name: string;
 	description?: string;
 	parameters?: object;
-	sourceInfo?: { source?: string };
+	sourceInfo?: { source?: string; path?: string };
+	/** OMP: set on MCP-backed tools. */
+	mcpServerName?: string;
 }
 
 export const TOOL_INFO_TOOL_NAME = "bridge_tool_info";
@@ -30,11 +34,13 @@ const BRIDGE_INTERNAL_TOOLS = new Set([
 
 const DEFAULT_INPUT_SCHEMA: object = { type: "object", properties: {}, additionalProperties: true };
 
-/** Serialize a tool's TypeBox/JSON schema safely for MCP exposure. */
+/** Serialize a tool's TypeBox/JSON schema safely for MCP exposure. OMP hands
+ *  out callable schemas; toPlainJsonSchema lowers them to JSON first. */
 export function serializeToolSchema(parameters?: object): object {
-	if (!parameters) return DEFAULT_INPUT_SCHEMA;
+	const schema = toPlainJsonSchema(parameters);
+	if (!schema || typeof schema !== "object") return DEFAULT_INPUT_SCHEMA;
 	try {
-		return JSON.parse(JSON.stringify(parameters)) as object;
+		return JSON.parse(JSON.stringify(schema)) as object;
 	} catch {
 		return DEFAULT_INPUT_SCHEMA;
 	}
@@ -53,8 +59,10 @@ export function bridgedPiTools(
 		// Never bridge the bridge's own tools. agy has native web tools, so
 		// our quota-burning one-shot wrappers must not tempt it through MCP.
 		!BRIDGE_INTERNAL_TOOLS.has(tool.name) &&
+		// OMP session-control tools (staged-action resolve, plan proposal, ...).
+		!isOmpHarnessTool(tool) &&
 		(mode === "mcp"
-			? /pi-mcp-adapter/.test(tool.sourceInfo?.source ?? "")
+			? /pi-mcp-adapter/.test(tool.sourceInfo?.source ?? "") || isOmpMcpTool(tool)
 			: tool.sourceInfo?.source !== "builtin"),
 	);
 }
