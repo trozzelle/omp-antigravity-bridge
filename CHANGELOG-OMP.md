@@ -19,3 +19,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: draw native-event and poll-run cards as display-only messages (cards)
 - omp: dedicated approval tool deferring to the host approval mode; approvals.mode inherit; gate auto and ACP permission policy follow host approval settings (approval)
 - omp: build the activate_skill catalog from the session's skill commands (skills) [upstreamable]
+- omp: show the first-run engine picker and the model-switch handoff toast, skip patch-cleanup (ui-events)
