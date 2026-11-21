@@ -61,6 +61,7 @@ import {
 import { detectPermissionGateExtensions, resolveGateMode } from "../src/approval-detect.js";
 import { hookScriptSource, removeGateHooks, stageGateHooks, sweepWorkspaceGateGroups } from "../src/approval-hook.js";
 import { StreamDriver } from "../src/driver.js";
+import { createOneshotProvider } from "../src/omp/oneshot-driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
 import { removeStagedAgyHome, stageAgyHome, sweepStagedAgyHomes, writeOwnBridgeEntry } from "../src/acp/home.js";
 import { cleanupManagedAcpInstall } from "../src/acp/setup.js";
@@ -85,7 +86,7 @@ import { redactText } from "../src/redact.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { registerWebTools } from "../src/web-tools.js";
-import { bridgeMcpConfigDir, startMcpServer, sweepStaleBridgeDirs, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
+import { bridgeMcpConfigDir, startMcpServer, sweepStaleBridgeDirs, TOKEN_HEADER, type McpBridgeDeps } from "../src/mcp-server.js";
 import {
 	registerBridgeServer,
 	healBridgeSuppression,
@@ -116,7 +117,17 @@ import {
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
-import { initHost } from "../src/omp/host.js";
+import { initHost, isOmpHost } from "../src/omp/host.js";
+import {
+	approvalHookScriptPath,
+	isWorkerRealm,
+	liveSessionId,
+	ompRealm,
+	piAttachResult,
+	sessionKindOf,
+	type BridgeEndpoint,
+	type RealmSession,
+} from "../src/omp/runtime.js";
 
 // Last UI seen (session_start / /agy commands). Module scope: both the
 // default export and registerAgyCommand assign it.
@@ -212,17 +223,24 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		"info",
 	);
 
-	const store = new SessionStore();
+	// OMP binds this factory again for every subagent in this realm: one store
+	// keeps a single writer per sessions.json (two stores race on its temp file).
+	const store = isOmpHost() ? ompRealm().store : new SessionStore();
 	// Bindings must reach disk before the host exits (OMP print mode exits
 	// right after session_shutdown). Its own handler, so it neither waits
 	// behind nor shares a timeout with the driver closes below.
 	pi.on("session_shutdown", () => store.flush());
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port
 	// at session/new / session/load time.
-	let mcpHandle: McpServerHandle | null = null;
+	let mcpHandle: BridgeEndpoint | null = null;
 	// Size of the activate_skill catalog the MCP bridge serves (0 = no bridge
 	// started, so no activate_skill). Read by the OMP system-prompt reduction.
 	let bridgeSkillCount = 0;
+	// OMP: this session's membership in the realm runtime (src/omp/runtime.ts).
+	let ompSession: RealmSession | null = null;
+	// OMP: this session's own UI (a subagent has none); footer statuses go here
+	// so a subagent's activity never lands in, or lingers on, the main footer.
+	let sessionUi: ExtensionUIContext | null = null;
 	// Session-only visibility overrides; never change either application's MCP config.
 	const hiddenBridgeTools = new Set<string>();
 	const getBridgeTools = () => bridgedPiTools(pi.getAllTools(), pi.getActiveTools(), loadConfig().bridgeTools, hiddenBridgeTools);
@@ -307,7 +325,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				// path; restore the global registration so the bridge stays
 				// reachable when the staged home is unusable.
 				if (mcpHandle) {
-					registerBridgeServer({ pid: process.pid, port: mcpHandle.port, token: mcpHandle.token, tokenHeader: TOKEN_HEADER });
+					registerBridgeServer({ pid: process.pid, port: mcpHandle.port, token: mcpHandle.realmToken, tokenHeader: TOKEN_HEADER });
 				}
 				return undefined;
 			}
@@ -453,7 +471,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	};
 	// Footer statuses render muted, matching pi-hostname's dim treatment.
 	const setDimStatus = (key: string, text: string | undefined): void => {
-		const ui = activeUi;
+		const ui = isOmpHost() ? sessionUi : activeUi;
 		if (!ui) return;
 		ui.setStatus(key, text === undefined ? undefined : ui.theme.fg("dim", text));
 	};
@@ -479,7 +497,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			return;
 		}
 		pendingNativeTools = Math.max(0, pendingNativeTools - 1);
-		if (pendingNativeTools === 0) activeUi?.setStatus("agy-native", undefined);
+		if (pendingNativeTools === 0) setDimStatus("agy-native", undefined);
 		// Bound persisted session size; the ACP result and diff may be megabytes.
 		pi.appendEntry<NativeDisplayEvent>("agy-native-event", {
 			...event,
@@ -681,6 +699,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// Same condition listTools uses to offer activate_skill.
 		skillsToolOffered: () => bridgeSkillCount > 0 && loadConfig().bridgeTools !== "none",
 	});
+	// OMP one-shot calls and /btw side turns get their own agy process
+	// (src/omp/oneshot-driver.ts): on this session's stream-json driver they
+	// waited for its open turn and restarted its warm agy. Isolated home only:
+	// on the global config a throwaway agy would see other sessions' bridges.
+	const oneshots =
+		isOmpHost() && engine === "stream-json" && streamHome.isolated
+			? createOneshotProvider({ entries, store, log: fileLog.log.bind(fileLog), driverLog: streamDriver.log })
+			: undefined;
 
 	pi.registerProvider("antigravity", {
 		name: "Antigravity (agy)",
@@ -698,7 +724,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			contextWindow: m.contextWindow,
 			maxTokens: m.maxTokens,
 		})),
-		streamSimple,
+		// OMP keeps one registration per api for the whole process and every
+		// subagent's factory call registers again: register the realm's stable
+		// dispatcher, which hands each call to its own session's streamSimple.
+		streamSimple: isOmpHost() ? ompRealm().streamSimple : streamSimple,
 	});
 
 	registerAgyCommand(pi, {
@@ -802,6 +831,21 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
 	// privileged API. Started on session_start, torn down on session_shutdown.
 	pi.on("session_start", async (event, ctx) => {
+		// OMP subagents fire session_start too: everything process-wide below
+		// (setup offers, legacy cleanups and notices, sweeps) runs for the main
+		// session only. pi has no ctx.agent, which counts as main.
+		const mainSession = sessionKindOf(ctx) === "main";
+		if (isOmpHost() && !ompSession) {
+			ompSession = ompRealm().join({
+				kind: mainSession ? "main" : "sub",
+				sessionId: () => liveSessionId(ctx.sessionManager),
+				streamSimple,
+				oneshot: oneshots?.streamSimple,
+				hasActiveTurn: () => activeDriver().activeHandle !== null,
+				conversationId: () => activeDriver().snapshot().conversationId ?? undefined,
+			});
+			sessionUi = ctx.hasUI ? ctx.ui : null;
+		}
 		if (ctx.hasUI) activeUi = ctx.ui;
 		// First-run engine picker: ask once, on the first interactive start,
 		// which turn engine to use. Skipped headless (ctx.mode !== "tui"),
@@ -813,7 +857,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// bridge startup below: on a genuine first run the modal blocks input
 		// anyway, so the delay is invisible.
 		let setupEngine = engine;
-		if (event.reason === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(configPath())) {
+		if (mainSession && event.reason === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(configPath())) {
 			// Best-effort, like the legacy-patch notice below: a picker failure
 			// (mid-prompt TUI teardown, resize races) must never take down the
 			// rest of session_start - the MCP bridge startup included. The
@@ -834,7 +878,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// lives outside our reach, so it is the only case that still warns.
 		// Independent once-flags: a failed cleanup must never suppress the
 		// env-var warning (or vice versa) for the rest of the process.
-		if (!legacyConfigCleanupRan) {
+		if (mainSession && !legacyConfigCleanupRan) {
 			legacyConfigCleanupRan = true;
 			try {
 				removeLegacyAcpBin();
@@ -843,7 +887,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				fileLog.log("legacy-acp-config-cleanup", { error: String(err) }, "error");
 			}
 		}
-		if (!legacyEnvAcpWarningShown && process.env.AGY_ACP_BIN?.trim()) {
+		if (mainSession && !legacyEnvAcpWarningShown && process.env.AGY_ACP_BIN?.trim()) {
 			legacyEnvAcpWarningShown = true;
 			const msg = "AGY_ACP_BIN is set but no longer used; turns run \"agy acp\" from the CLI. Remove it from your shell config, then start a new terminal.";
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
@@ -855,7 +899,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 			else console.error(`[antigravity-bridge] ${msg}`);
 		}
-		if (!managedAcpCleanupRan) {
+		if (mainSession && !managedAcpCleanupRan) {
 			managedAcpCleanupRan = true;
 			try {
 				const cleanup = cleanupManagedAcpInstall();
@@ -864,12 +908,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				fileLog.log("legacy-acp-cleanup", { error: String(err) }, "warn");
 			}
 		}
-		void checkAgySetup(ctx, setupEngine);
+		if (mainSession) void checkAgySetup(ctx, setupEngine);
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
 		// and offer /agy patch-cleanup. Never auto-edits the install.
 		try {
-			if (!loadConfig().patchCleanupNotified && patchStatus().present) {
+			if (mainSession && !loadConfig().patchCleanupNotified && patchStatus().present) {
 				// Flag after surfacing, not before: headless sessions log to
 				// stderr (ctx.ui.notify is a no-op without a UI), so the notice
 				// is never silently dropped.
@@ -926,14 +970,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			else console.error(msg);
 		};
 		// Sweep crashed sessions even when the bridge is disabled.
-		sweepStaleBridgeServers();
-		sweepStaleBridgeDirs();
-		sweepStagedAgyHomes();
+		if (mainSession) {
+			sweepStaleBridgeServers();
+			sweepStaleBridgeDirs();
+			sweepStagedAgyHomes();
+		}
 		// Start the bridge unless the user turned it off. No patch gate, no
 		// consent flow: calls route through pi's normal toolUse loop.
 		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
 		if (bridgeMode === "none") return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
+		// OMP runs a worker-thread session's provider calls on the main thread,
+		// so a listener started in this realm would never be called.
+		if (isOmpHost() && isWorkerRealm()) return;
 		// pi loads project skill locations only after the project is trusted;
 		// mirror that gate. Global skill dirs are always scanned.
 		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {});
@@ -1036,14 +1085,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				isError: !skill,
 			});
 		};
-		const r = await startMcpServer(
-			{
-				listTools,
-				onToolCall: bridgeOnToolCall,
-				onApproval: (ticket, payload) => roundTrips.onApproval(ticket, payload),
-			},
-			{ log: mcpLog },
-		);
+		const bridgeDeps: McpBridgeDeps = {
+			listTools,
+			onToolCall: bridgeOnToolCall,
+			onApproval: (ticket, payload) => roundTrips.onApproval(ticket, payload),
+		};
+		// OMP: one listener per realm, a route token per session (src/omp/runtime.ts).
+		const r = ompSession
+			? await ompSession.attachBridge(bridgeDeps, mcpLog)
+			: piAttachResult(await startMcpServer(bridgeDeps, { log: mcpLog }));
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
 			// Entries a crashed delegation left suppressed are healed here,
@@ -1053,16 +1103,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			// Global-config hygiene runs on BOTH engines: a crashed stream-json
 			// session must not leave dead-pid entries or stuck suppression flags
 			// for the next one.
-			healBridgeSuppression();
+			if (r.first) healBridgeSuppression();
 			// ACP supplies the bridge per-session (session/new | session/load).
 			// stream-json skips the global file entirely when the isolated home
 			// is active (issue #14): this session's bridge rides the staged
 			// config instead, so no other agy on the machine can see or call it.
-			if (engine === "stream-json" && !streamHome.isolated) {
+			if (r.first && engine === "stream-json" && !streamHome.isolated) {
 				registerBridgeServer({
 					pid: process.pid,
 					port: r.handle.port,
-					token: r.handle.token,
+					token: r.handle.realmToken,
 					tokenHeader: TOKEN_HEADER,
 				});
 			} else if (streamHome.path) {
@@ -1075,7 +1125,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					fileLog.log("stream-home-entry-failed", { error: String(err) }, "warn");
 				}
 			}
-			if (streamHome.fallbackReason) {
+			if (streamHome.fallbackReason && mainSession) {
 				// Isolation degraded to the legacy global path: say so once.
 				const msg = `[antigravity-bridge] ${streamHome.fallbackReason}; using the global MCP registration (issue #14 isolation unavailable).`;
 				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
@@ -1089,7 +1139,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			{
 				const cfg = loadConfig();
 				const mode = resolveGateMode(cfg.approvals.gateMode, detectPermissionGateExtensions());
-				if (mode !== "off" && engine === "acp") {
+				if (r.first && mode !== "off" && engine === "acp") {
 					// Staged-home hook delivery is probe-verified on agy 1.5.12
 					// only (issue #18); older ACP builds may not honor it. Warn
 					// so a silently inert gate is at least visible in the log.
@@ -1098,7 +1148,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 						fileLog.log("approval-gate-agy-version-unverified", { version: cli.raw }, "warn");
 					}
 				}
-				if (mode === "dedicated") {
+				if (r.first && mode === "dedicated") {
 					// The explicit antigravity_approve variant is planned; until it
 					// ships, dedicated stages the same shadow tools. Say so, so the
 					// config value never lies silently.
@@ -1117,30 +1167,34 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					const unstaged = removeGateHooks();
 					if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
 				} else {
-					// Script: per-pid file; 0600 because the bridge token is
-					// embedded (peer review 2026-09-07).
-					const scriptPath = path.join(logsDir(), `approval-hook-${process.pid}.js`);
-					fs.mkdirSync(path.dirname(scriptPath), { recursive: true, mode: 0o700 });
-					fs.writeFileSync(
-						scriptPath,
-						hookScriptSource({
+					// Script: one per realm (approvalHookScriptPath); 0600 because
+					// the listener token is embedded (peer review 2026-09-07). Under
+					// OMP only the session that started the listener stages it; the
+					// realm's last session removes it.
+					if (r.first) {
+						const scriptPath = approvalHookScriptPath();
+						fs.mkdirSync(path.dirname(scriptPath), { recursive: true, mode: 0o700 });
+						fs.writeFileSync(
+							scriptPath,
+							hookScriptSource({
+								port: r.handle.port,
+								token: r.handle.realmToken,
+								deadlineMs: APPROVAL_PARK_MS,
+							}),
+							{ mode: 0o600 },
+						);
+						gateScriptPath = scriptPath;
+						// Private per-pid staging (issue #5 isolation): the gate group goes
+						// into the bridge add-dir that ONLY this session's agy receives.
+						// Standalone sessions in the workspace never load it.
+						const staged = stageGateHooks(bridgeMcpConfigDir(), {
 							port: r.handle.port,
-							token: r.handle.token,
-							deadlineMs: APPROVAL_PARK_MS,
-						}),
-						{ mode: 0o600 },
-					);
-					gateScriptPath = scriptPath;
-					// Private per-pid staging (issue #5 isolation): the gate group goes
-					// into the bridge add-dir that ONLY this session's agy receives.
-					// Standalone sessions in the workspace never load it.
-					const staged = stageGateHooks(bridgeMcpConfigDir(), {
-						port: r.handle.port,
-						token: r.handle.token,
-						scriptPath,
-						parkBudgetMs: APPROVAL_PARK_MS,
-					});
-					fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
+							token: r.handle.realmToken,
+							scriptPath,
+							parkBudgetMs: APPROVAL_PARK_MS,
+						});
+						fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
+					}
 
 					// Shadow bases: factory twins of pi's own builtins (public API).
 					// pi.getAllTools() is unusable here: it returns ToolInfo, which
@@ -1196,10 +1250,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			console.error(`[antigravity-bridge] MCP tool bridge disabled: ${r.reason}`);
 		}
 	});
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		// The UI is going away; a later auth-url must fall back to stderr
-		// instead of toasting into a dead UI (where it would be lost).
-		activeUi = null;
+		// instead of toasting into a dead UI (where it would be lost). Only the
+		// main session owns that UI: an OMP subagent's shutdown leaves it alone.
+		if (sessionKindOf(ctx) === "main") activeUi = null;
 		const h = mcpHandle;
 		mcpHandle = null;
 		// "recycle", NOT "shutdown": pi fires session_shutdown on /new, /resume
@@ -1214,19 +1269,29 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		await acpDriver.close("recycle", "session shutdown");
 		roundTrips.failAll(FAIL_REASON_SHUTDOWN);
 		await h?.close();
-		if (engine === "stream-json") unregisterBridgeServer(process.pid);
 		hiddenBridgeTools.clear();
-		// Approval gate: unstage hooks and remove the per-pid script. Pending
-		// approvals already failed closed via handle close (bridge shutdown deny).
-		const unstaged = removeGateHooks();
-		if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
-		if (gateScriptPath) {
-			try {
-				fs.rmSync(gateScriptPath, { force: true });
-			} catch {
-				/* best effort */
+		if (ompSession) {
+			// OMP: the listener, its add-dir (staged hooks), the hook script and
+			// the global entry serve every session in this realm; the last
+			// session to leave removes them.
+			await oneshots?.close();
+			const session = ompSession;
+			ompSession = null;
+			await session.leave();
+		} else {
+			if (engine === "stream-json") unregisterBridgeServer(process.pid);
+			// Approval gate: unstage hooks and remove the per-pid script. Pending
+			// approvals already failed closed via handle close (bridge shutdown deny).
+			const unstaged = removeGateHooks();
+			if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
+			if (gateScriptPath) {
+				try {
+					fs.rmSync(gateScriptPath, { force: true });
+				} catch {
+					/* best effort */
+				}
+				gateScriptPath = null;
 			}
-			gateScriptPath = null;
 		}
 	});
 }
