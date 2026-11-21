@@ -10,3 +10,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: detect the OMP host and load without generateDiffString or registerEntryRenderer (load)
 - omp: upstream sync automation, CI workflows, load smoke and live checklist (sync)
 - omp: read OMP's system prompt, tools and developer-role messages (context)
+- omp: flush session bindings before shutdown (sessions) [upstreamable]

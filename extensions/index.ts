@@ -213,6 +213,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	);
 
 	const store = new SessionStore();
+	// Bindings must reach disk before the host exits (OMP print mode exits
+	// right after session_shutdown). Its own handler, so it neither waits
+	// behind nor shares a timeout with the driver closes below.
+	pi.on("session_shutdown", () => store.flush());
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port
 	// at session/new / session/load time.
 	let mcpHandle: McpServerHandle | null = null;

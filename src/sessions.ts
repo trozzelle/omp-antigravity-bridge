@@ -138,6 +138,17 @@ export class SessionStore {
 			});
 	}
 
+	/** Resolve once every queued write (set, delete, clear) has reached disk,
+	 *  including writes queued while waiting. Never rejects: failed writes are
+	 *  already swallowed by the chain. Await it before the process may exit. */
+	async flush(): Promise<void> {
+		let pending: Promise<void>;
+		do {
+			pending = this.writeChain;
+			await pending;
+		} while (pending !== this.writeChain);
+	}
+
 	private async persist(): Promise<void> {
 		const dir = path.dirname(this.path);
 		await fs.promises.mkdir(dir, { recursive: true });
