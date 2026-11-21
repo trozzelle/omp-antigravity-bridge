@@ -23,3 +23,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: claim AskAntigravity at import time so pi-ask-antigravity defers in any load order under OMP's batch loader (interop)
 - omp: print /agy doctor to stdout in headless print mode (doctor) [upstreamable]
 - omp: document installing and using the bridge with OMP (docs)
+- omp: keep the user's message and OMP summary messages out of the digest (context)

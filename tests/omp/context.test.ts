@@ -252,6 +252,58 @@ describe("OMP context in a provider turn", () => {
 		expect(request?.prompt).toBe("Fix the failing test\n\n<system-reminder>Todo list is empty.</system-reminder>");
 	});
 
+	it("does not also ship the trailing user message in the context digest", async () => {
+		const reminder = "<system-reminder>Todo list is empty.</system-reminder>";
+		const messages = [ompUser("earlier ask"), ompAssistant("done", "anthropic"), ompUser("Fix the failing test"), ompDeveloper(reminder)];
+		const { request } = await runAcpTurn(ompContext({ tools: OMP_TOOLS, messages }), undefined, "stream-json");
+		const prompt = request?.prompt ?? "";
+		expect(prompt.split("Fix the failing test")).toHaveLength(2);
+		expect(prompt.split(reminder)).toHaveLength(2);
+		expect(prompt).toContain("[earlier user message]\nearlier ask");
+	});
+
+	it("keeps the trailing user message out of the ACP embedded context", async () => {
+		const messages = [ompUser("earlier ask"), ompAssistant("done", "anthropic"), ompUser("Fix the failing test"), ompDeveloper("<system-reminder>x</system-reminder>")];
+		const { request } = await runAcpTurn(ompContext({ tools: OMP_TOOLS, messages }));
+		const embedded = request?.contextBlock?.text ?? "";
+		expect(embedded).toContain("earlier ask");
+		expect(embedded).not.toContain("Fix the failing test");
+	});
+
+	describe("OMP summary messages (role user)", () => {
+		const COMPACTION = "Prior model work/tool state available.\n\n<summary>\nWe fixed the parser. UNIQUE-SUMMARY-BODY\n</summary>";
+		const BRANCH = "Branch-return summary:\nTried approach B, abandoned. UNIQUE-BRANCH-BODY";
+
+		it("sends only the user's prompt after a compaction summary, and the summary once in the embedded context", async () => {
+			const { request } = await runAcpTurn(ompContext({ tools: OMP_TOOLS, messages: [ompUser(COMPACTION), ompUser("Now fix the lexer")] }));
+			expect(request?.prompt).toBe("Now fix the lexer");
+			const embedded = request?.contextBlock?.text ?? "";
+			expect(embedded.split("UNIQUE-SUMMARY-BODY")).toHaveLength(2);
+			expect(embedded).not.toContain("Now fix the lexer");
+		});
+
+		it("does not send the compaction summary as the prompt on stream-json either", async () => {
+			const { request } = await runAcpTurn(ompContext({ tools: OMP_TOOLS, messages: [ompUser(COMPACTION), ompUser("Now fix the lexer")] }), undefined, "stream-json");
+			const prompt = request?.prompt ?? "";
+			expect(prompt.split("UNIQUE-SUMMARY-BODY")).toHaveLength(2);
+			expect(prompt.endsWith("Now fix the lexer")).toBe(true);
+			expect(prompt.split("Now fix the lexer")).toHaveLength(2);
+		});
+
+		it("stops the prompt at a branch summary and keeps that summary in the digest", async () => {
+			const messages = [ompUser("Try B"), ompAssistant("trying", "anthropic"), ompUser(BRANCH), ompUser("Back to A")];
+			const { request } = await runAcpTurn(ompContext({ tools: OMP_TOOLS, messages }));
+			expect(request?.prompt).toBe("Back to A");
+			expect(request?.contextBlock?.text).toContain("[earlier user message]\nBranch-return summary:");
+		});
+
+		it("falls back to a summary-only tail as the prompt rather than failing", async () => {
+			const { message, request } = await runAcpTurn(ompContext({ tools: OMP_TOOLS, messages: [ompUser(COMPACTION)] }));
+			expect(message.stopReason).toBe("stop");
+			expect(request?.prompt).toContain("UNIQUE-SUMMARY-BODY");
+		});
+	});
+
 	it("forwards images carried by a developer message", async () => {
 		const image = { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
 		const { request } = await runAcpTurn(
@@ -276,8 +328,22 @@ describe("OMP context in a provider turn", () => {
 });
 
 describe("OMP developer messages in the digest", () => {
+	it("ends the delta where the trailing user/developer run starts", () => {
+		const messages = [ompUser("hi"), ompAssistant("hello", "anthropic"), ompUser("Fix the test"), ompDeveloper("<system-reminder>note</system-reminder>")];
+		const digest = buildContextDigest(ompContext({ messages }).messages, 0);
+		expect(digest).toContain("[earlier user message]\nhi");
+		expect(digest).not.toContain("Fix the test");
+		expect(digest).not.toContain("note");
+	});
+
+	it("still includes the whole transcript on a compaction resume", () => {
+		const messages = [ompUser("hi"), ompAssistant("hello", "anthropic"), ompUser("Fix the test")];
+		const digest = buildContextDigest(ompContext({ messages }).messages, 0, { includeLast: true });
+		expect(digest).toContain("[earlier user message]\nFix the test");
+	});
+
 	it("ships an earlier developer message as session context", () => {
-		const messages = [ompUser("hi"), ompAssistant("hello", "anthropic"), ompDeveloper("CI failed on main"), ompUser("now?")];
+		const messages = [ompUser("hi"), ompAssistant("hello", "anthropic"), ompDeveloper("CI failed on main"), ompAssistant("noted", "anthropic"), ompUser("now?")];
 		const digest = buildContextDigest(ompContext({ messages }).messages, 0);
 		expect(digest).toContain("[earlier user message]\nCI failed on main");
 	});

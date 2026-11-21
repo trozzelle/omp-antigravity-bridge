@@ -46,10 +46,16 @@ import path from "node:path";
 import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput } from "./diff-render.js";
 import { stageSyspromptAgent } from "./sysprompt-agent.js";
 import { buildImageNote, stagePromptImages } from "./prompt-images.js";
-import { contextSystemPrompt, contextTools, isUserLikeRole } from "./omp/context.js";
+import {
+	contextSystemPrompt,
+	contextTools,
+	isOmpCompactionSummary,
+	isUserLikeRole,
+	OMP_BRANCH_SUMMARY_PREFIX,
+} from "./omp/context.js";
 import { ompApprovalToolCall } from "./omp/approval-tool.js";
 import { isOmpHost } from "./omp/host.js";
-import { isEphemeralCall, isOmpCompactionSummary, ompHandoffBody } from "./omp/oneshot.js";
+import { isEphemeralCall, ompHandoffBody } from "./omp/oneshot.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -119,7 +125,10 @@ function lastMessageParts(m: Message | undefined): { text: string | null; images
 /** pi-side history shapes that can sit inside a trailing user run; a run
  *  member matching one truncates the run to the messages after it. */
 function isBacklogUserShape(text: string): boolean {
-	return text.includes(COMPACTION_MARKER) || isOmpCompactionSummary(text) || text.startsWith(BRANCH_SUMMARY_PREFIX) || text.startsWith(BASH_RUN_PREFIX);
+	// OMP: compaction, handoff and branch-return summaries ship through the
+	// digest, never as part of the prompt.
+	if (isOmpCompactionSummary(text) || (isOmpHost() && text.trimStart().startsWith(OMP_BRANCH_SUMMARY_PREFIX))) return true;
+	return text.includes(COMPACTION_MARKER) || text.startsWith(BRANCH_SUMMARY_PREFIX) || text.startsWith(BASH_RUN_PREFIX);
 }
 
 /** The trailing run of role:"user" messages (plus "developer" under OMP,
