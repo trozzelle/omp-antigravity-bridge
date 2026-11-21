@@ -129,6 +129,15 @@ import { NATIVE_EVENT_CARD, POLL_RUN_CARD, emitDisplayCard, nativeEventSummary, 
 import { ModelChangeTracker } from "../src/omp/model-change.js";
 import { isWorkerRealm, sessionKindOf, type SessionKind } from "../src/omp/runtime.js";
 
+// Claim the AskAntigravity tool for this process. pi-ask-antigravity (if also
+// installed) checks this in-process flag OR the bridge's package.json on disk
+// and defers. See that extension's isBridgeInstalled(). Set at import time:
+// OMP's batch loader imports every extension module before running any
+// factory, so under OMP the claim holds whatever order the factories run in.
+// pi imports and runs one extension at a time, so there it still relies on
+// the on-disk package check.
+Reflect.set(globalThis, Symbol.for("pi-antigravity-bridge:active"), true);
+
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
 }
@@ -142,11 +151,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// loaded once, read synchronously by the gate and the ACP policy.
 	if (isOmpHost()) await loadOmpSettingsLookup();
 	ensureQueuedMessagesDefaults({ onlyIfDirExists: true });
-
-	// Claim the AskAntigravity tool for this process. pi-ask-antigravity (if also
-	// installed) checks this in-process flag OR the bridge's package.json on disk
-	// and defers. See that extension's isBridgeInstalled().
-	(globalThis as Record<symbol, unknown>)[Symbol.for("pi-antigravity-bridge:active")] = true;
 
 	const binary = resolveAgyBinary();
 
@@ -756,7 +760,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// detects this package via import.meta.resolve). Opt-out: askTool=false
 	// (config file, AGY_ASK_TOOL, /agy ask, or the picker) skips registration
 	// entirely - users who want only the provider keep a clean tool list.
-	// Note: the active flag below is set regardless of askTool, so
+	// Note: the active flag (set at import, top of this file) holds regardless of askTool, so
 	// pi-ask-antigravity keeps deferring even then: off means NO delegation
 	// tool from either package, not a fallback to pi-ask-antigravity.
 	if (loadConfig().askTool) await registerAskAntigravityTool(pi, toolModels, fileLog.log.bind(fileLog));
