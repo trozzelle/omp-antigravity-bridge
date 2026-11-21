@@ -127,6 +127,7 @@ import { withDialogLock } from "../src/dialog-lock.js";
 import { initHost, isOmpHost } from "../src/omp/host.js";
 import { NATIVE_EVENT_CARD, POLL_RUN_CARD, emitDisplayCard, nativeEventSummary, pollRunSummary, registerCardRenderers } from "../src/omp/cards.js";
 import { ModelChangeTracker } from "../src/omp/model-change.js";
+import { showReport } from "../src/omp/report.js";
 import { isWorkerRealm, sessionKindOf, type SessionKind } from "../src/omp/runtime.js";
 
 // Claim the AskAntigravity tool for this process. pi-ask-antigravity (if also
@@ -1556,7 +1557,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				// The config surface lives here too, so doctor is the ONE status
 				// surface (former /agy status is gone).
 				lines.push("", "settings:", ...settingsRows(ctx));
-				ui?.notify(lines.join("\n"), "info");
+				showReport(cmdCtx, lines.join("\n"));
 				return;
 			}
 			if (sub === "mode") {
