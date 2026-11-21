@@ -131,6 +131,7 @@ import {
 	type RealmSession,
 } from "../src/omp/runtime.js";
 import { ModelChangeTracker } from "../src/omp/model-change.js";
+import { showReport } from "../src/omp/report.js";
 
 // Last UI seen (session_start / /agy commands). Module scope: both the
 // default export and registerAgyCommand assign it.
@@ -1557,7 +1558,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				// The config surface lives here too, so doctor is the ONE status
 				// surface (former /agy status is gone).
 				lines.push("", "settings:", ...settingsRows(ctx));
-				ui?.notify(lines.join("\n"), "info");
+				showReport(cmdCtx, lines.join("\n"));
 				return;
 			}
 			if (sub === "mode") {
