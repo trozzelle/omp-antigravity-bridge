@@ -22,6 +22,7 @@ import path from "node:path";
 import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
+	type ExtensionContext,
 	type ExtensionUIContext,
 	createBashToolDefinition,
 	createEditToolDefinition,
@@ -129,6 +130,7 @@ import {
 	type BridgeEndpoint,
 	type RealmSession,
 } from "../src/omp/runtime.js";
+import { ModelChangeTracker } from "../src/omp/model-change.js";
 
 // Last UI seen (session_start / /agy commands). Module scope: both the
 // default export and registerAgyCommand assign it.
@@ -632,12 +634,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Model-switch handoff toast: entering an unbound antigravity model
 	// mid-session opens a fresh agy conversation on the next turn; the
 	// digest re-delivers pi-side context into it. UI only.
-	pi.on("model_select", (event, ctx) => {
+	const notifyModelHandoff = (api: string | undefined, source: "set" | "cycle" | "restore", ctx: ExtensionContext): void => {
 		try {
 			const msg = handoffToast({
-				api: event.model?.api,
+				api,
 				digestEnabled: loadConfig().digest,
-				source: event.source,
+				source,
 				bound: (() => {
 					// Shape-cast as in the session_compact handler above: tolerate pi
 					// builds whose dts omits getSessionId.
@@ -654,7 +656,21 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		} catch (err) {
 			fileLog.log("handoff-toast-error", { error: err instanceof Error ? err.message : String(err) }, "warn");
 		}
-	});
+	};
+	pi.on("model_select", (event, ctx) => notifyModelHandoff(event.model?.api, event.source, ctx));
+	// OMP raises no model_select to extensions: compare the model each prompt
+	// runs on with the one the session started on (src/omp/model-change.ts).
+	if (isOmpHost()) {
+		const modelChanges = new ModelChangeTracker();
+		pi.on("session_start", (_event, ctx) => modelChanges.baseline(ctx.model));
+		// /resume, /new and /fork raise session_switch (not session_start) and
+		// restore the target session's model: a restore, never a switch.
+		modelChanges.baselineOnSessionSwitch(pi);
+		pi.on("before_agent_start", (_event, ctx) => {
+			const switched = modelChanges.observe(ctx.model);
+			if (switched) notifyModelHandoff(switched.api, "set", ctx);
+		});
+	}
 	const streamSimple = createStreamSimple({
 		entries,
 		store,
@@ -830,7 +846,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// bridge startup below: on a genuine first run the modal blocks input
 		// anyway, so the delay is invisible.
 		let setupEngine = engine;
-		if (mainSession && event.reason === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(configPath())) {
+		// OMP's session_start carries no reason; it fires once, at startup.
+		if (mainSession && (event.reason ?? "startup") === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(configPath())) {
 			// Best-effort, like the legacy-patch notice below: a picker failure
 			// (mid-prompt TUI teardown, resize races) must never take down the
 			// rest of session_start - the MCP bridge startup included. The
@@ -884,9 +901,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (mainSession) void checkAgySetup(ctx, setupEngine);
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
-		// and offer /agy patch-cleanup. Never auto-edits the install.
+		// and offer /agy patch-cleanup. Never auto-edits the install. Not under
+		// OMP: the patch only ever targeted pi's own install.
 		try {
-			if (mainSession && !loadConfig().patchCleanupNotified && patchStatus().present) {
+			if (mainSession && !isOmpHost() && !loadConfig().patchCleanupNotified && patchStatus().present) {
 				// Flag after surfacing, not before: headless sessions log to
 				// stderr (ctx.ui.notify is a no-op without a UI), so the notice
 				// is never silently dropped.
@@ -1388,6 +1406,10 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				return;
 			}
 			if (sub === "patch-cleanup") {
+				if (isOmpHost()) {
+					ui?.notify("patch-cleanup only applies to pi installs; nothing to clean under OMP.", "info");
+					return;
+				}
 				const st = patchStatus();
 				if (!st.present) {
 					ui?.notify(

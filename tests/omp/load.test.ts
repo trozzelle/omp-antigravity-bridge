@@ -57,4 +57,36 @@ describe("extension load on an OMP-shaped host", () => {
 		const providers = calls.get("registerProvider") ?? [];
 		expect(providers.map((args) => args[0])).toContain("antigravity");
 	});
+
+	it("does not toast a model switch after /resume restores the session's model", async () => {
+		const { default: factory } = await import("../../extensions/index.js");
+		const { api, calls } = ompShapedPi();
+		await factory(api);
+		const handlersFor = (event: string): Array<(e: unknown, ctx: unknown) => unknown> =>
+			(calls.get("on") ?? []).flatMap(([name, handler]) => (name === event && typeof handler === "function" ? [handler as (e: unknown, ctx: unknown) => unknown] : []));
+		const notify: string[] = [];
+		const ctxOn = (model: { provider: string; id: string; api: string }) => ({
+			model,
+			hasUI: true,
+			cwd: agentDir,
+			ui: { notify: (message: string) => notify.push(message) },
+			sessionManager: { getSessionId: () => "resumed", getEntries: () => [{ type: "message" }] },
+		});
+		const opus = { provider: "anthropic", id: "claude-opus-5-5", api: "anthropic-messages" };
+		const flash = { provider: "antigravity", id: "gemini-3-8-flash", api: "agy-bridge" };
+		const prompt = async (model: typeof opus): Promise<void> => {
+			for (const handler of handlersFor("before_agent_start")) await handler({ type: "before_agent_start" }, ctxOn(model));
+		};
+
+		await prompt(opus);
+		// /resume switches to a session whose model is an unbound antigravity model.
+		for (const handler of handlersFor("session_switch")) await handler({ type: "session_switch", reason: "resume" }, ctxOn(flash));
+		await prompt(flash);
+		expect(notify).toEqual([]);
+
+		// A switch the user makes afterwards still toasts.
+		await prompt(opus);
+		await prompt(flash);
+		expect(notify).toEqual(["handoff context will ship to the new agy conversation"]);
+	});
 });
