@@ -47,6 +47,8 @@ import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput
 import { stageSyspromptAgent } from "./sysprompt-agent.js";
 import { buildImageNote, stagePromptImages } from "./prompt-images.js";
 import { contextSystemPrompt, contextTools, isUserLikeRole } from "./omp/context.js";
+import { ompApprovalToolCall } from "./omp/approval-tool.js";
+import { isOmpHost } from "./omp/host.js";
 import { isEphemeralCall, isOmpCompactionSummary, ompHandoffBody } from "./omp/oneshot.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
@@ -1012,9 +1014,22 @@ export class ToolRoundTrips {
 			: {}) as Record<string, unknown>;
 		const mapped = mapNativeToShadow(native, args);
 		if (!mapped) return deny(`tool ${native} did not map to a shadow call (ungated or unresolved target path)`);
+		// Under OMP the approval rides the dedicated tool (OMP builtins are
+		// never shadowed); under pi, the shadow builtin with markers.
+		const call = isOmpHost()
+			? ompApprovalToolCall(native, mapped.input, ticket)
+			: {
+					name: mapped.shadow,
+					args: {
+						...mapped.input,
+						[GATE_MARKER]: true,
+						__agyTicket: ticket,
+						__agyTool: native,
+					},
+				};
 		const entry: PendingRoundTrip = {
 			kind: "approval",
-			name: mapped.shadow,
+			name: call.name,
 			nativeName: native,
 			started: Date.now(),
 			timer: setTimeout(() => {
@@ -1026,18 +1041,8 @@ export class ToolRoundTrips {
 			}, APPROVAL_PARK_MS),
 		};
 		this.#pending.set(ticket, entry);
-		handle.pushExternal({
-			type: "bridge_call",
-			callId: ticket,
-			name: mapped.shadow,
-			args: {
-				...mapped.input,
-				[GATE_MARKER]: true,
-				__agyTicket: ticket,
-				__agyTool: native,
-			},
-		});
-		this.#log("approval-parked", { ticket, native, shadow: mapped.shadow });
+		handle.pushExternal({ type: "bridge_call", callId: ticket, name: call.name, args: call.args });
+		this.#log("approval-parked", { ticket, native, shadow: call.name });
 	}
 
 	/** Settle a parked approval with a deny. Used by the park timeout and
