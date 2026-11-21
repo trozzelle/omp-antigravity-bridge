@@ -14,3 +14,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: keep OMP one-shot calls and side turns off the session's conversation and recognise OMP compaction summaries (compaction)
 - omp: share one bridge runtime across subagent sessions (runtime)
 - omp: send real tool schemas to agy, match OMP MCP tools in `mcp` mode, never bridge OMP harness tools (catalog)
+- omp: re-execute agy `read_file` steps as native reads (re-exec) [upstreamable]
