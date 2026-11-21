@@ -16,3 +16,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: send real tool schemas to agy, match OMP MCP tools in `mcp` mode, never bridge OMP harness tools (catalog)
 - omp: re-execute agy `read_file` steps as native reads (re-exec) [upstreamable]
 - omp: re-execute agy read steps on OMP `read` selectors, `list_dir` on `read`, `find_by_name` on `glob`, without the pi-only reasoning argument (re-exec)
+- omp: draw native-event and poll-run cards as display-only messages (cards)

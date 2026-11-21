@@ -27,7 +27,6 @@ import {
 	createEditToolDefinition,
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { DIALOG_OPTIONS, DialogMenu, dialogBlocked, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import {
 	entriesFromRaw,
@@ -51,7 +50,7 @@ import {
 	type NativeDisplayEvent,
 } from "../src/provider.js";
 import { handoffToast } from "../src/handoff-toast.js";
-import { PollRunFolder, type PollRunData } from "../src/poll-fold.js";
+import { PollRunFolder } from "../src/poll-fold.js";
 import {
 	createShadowTool,
 	stripMarkerFields,
@@ -124,6 +123,7 @@ import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
 import { initHost, isOmpHost } from "../src/omp/host.js";
+import { NATIVE_EVENT_CARD, POLL_RUN_CARD, emitDisplayCard, nativeEventSummary, pollRunSummary, registerCardRenderers } from "../src/omp/cards.js";
 import { isWorkerRealm, sessionKindOf, type SessionKind } from "../src/omp/runtime.js";
 
 function resolveAgyBinary(): string {
@@ -415,50 +415,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Subagent roster: folded from every driver activity (both engines) via
 	// the provider; /agy subagents renders it. In-memory, process-lifetime.
 	const roster = new SubagentRoster();
-	// ACP tool activity is display-only: durable Pi entries with native-looking
+	// ACP tool activity is display-only: durable cards with native-looking
 	// titles and optional diffs. Unlike a synthetic Pi toolCall this does not
 	// re-execute edits, park the turn, or add tool results to model context.
-	if (engine === "acp" && typeof pi.registerEntryRenderer === "function") {
-		pi.registerEntryRenderer<NativeDisplayEvent>("agy-native-event", (entry, { expanded }, theme) => {
-			const event = entry.data;
-			// Collapsed detail: most-specific signal wins (path, command, agy's own
-			// display text). The name is NOT a fallback here - it rendered "ls ls"
-			// duplication whenever the event carried neither path nor command.
-			const firstLine = (value: string | undefined): string | undefined => value?.split(/\r?\n/, 1)[0].trim() || undefined;
-			const detail = event?.path ? path.basename(event.path) : firstLine(event?.command) ?? firstLine(event?.output);
-			const status = event?.status === "failed" ? theme.fg("error", "✗") : theme.fg("success", "✓");
-			const lines = [`${status} ${theme.fg("toolTitle", event?.name ?? "Antigravity")}${detail ? ` ${theme.fg("muted", detail.slice(0, 160))}` : ""}`];
-			if (expanded) {
-				if (event?.path) lines.push(theme.fg("dim", event.path));
-				if (event?.diff) {
-					for (const line of event.diff.split("\n")) {
-						const color = line.startsWith("+") ? "toolDiffAdded" : line.startsWith("-") ? "toolDiffRemoved" : "toolDiffContext";
-						lines.push(theme.fg(color, line));
-					}
-				}
-				if (event?.output && (!event.diff || event.status === "failed")) lines.push(theme.fg("toolOutput", event.output));
-			}
-			return new Text(lines.join("\n"), 0, 0);
-		});
-		// Collapsed poll runs: one ♊︎-marked counted line per consecutive poll
-		// burst instead of one entry per poll.
-		pi.registerEntryRenderer<PollRunData>("agy-poll-run", (entry, { expanded }, theme) => {
-			const run = entry.data;
-			const count = run?.count ?? 0;
-			const label = `Poll ${run?.target ?? "bridge call"} (x${count}${run?.state === "failed" ? ", failed" : ""})`;
-			const lines = [`♊︎ ${theme.fg("toolTitle", POLL_TOOL_NAME)} ${theme.fg("muted", label)}`];
-			if (expanded && run) {
-				const time = (iso: string): string => new Date(iso).toLocaleTimeString();
-				lines.push(theme.fg("dim", `${count} ${count === 1 ? "poll" : "polls"}, ${time(run.firstAt)} → ${time(run.lastAt)}`));
-			}
-			return new Text(lines.join("\n"), 0, 0);
-		});
-	}
+	// Renderers and the per-host emit path live in src/omp/cards.ts.
+	if (engine === "acp") registerCardRenderers(pi);
 	let pendingNativeTools = 0;
 	const pollRuns = new PollRunFolder();
 	const closePollRun = (): void => {
 		const settled = pollRuns.flush();
-		if (settled) pi.appendEntry<PollRunData>("agy-poll-run", settled);
+		if (settled) emitDisplayCard(pi, POLL_RUN_CARD, settled, pollRunSummary(settled));
 		setDimStatus("agy-poll", undefined);
 	};
 	// Footer statuses render muted, matching pi-hostname's dim treatment.
@@ -474,7 +440,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (event.name === POLL_TOOL_NAME) {
 			const view = event.callId ? roundTrips.poll(event.callId) : undefined;
 			const switched = pollRuns.add(view?.name ?? "unknown call", view?.state ?? "running", new Date());
-			if (switched) pi.appendEntry<PollRunData>("agy-poll-run", switched);
+			if (switched) emitDisplayCard(pi, POLL_RUN_CARD, switched, pollRunSummary(switched));
 			const open = pollRuns.open;
 			setDimStatus("agy-poll", open ? `♊︎ bridge_poll_result → ${open.target} (x${open.count})` : undefined);
 			return;
@@ -491,12 +457,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		pendingNativeTools = Math.max(0, pendingNativeTools - 1);
 		if (pendingNativeTools === 0) setDimStatus("agy-native", undefined);
 		// Bound persisted session size; the ACP result and diff may be megabytes.
-		pi.appendEntry<NativeDisplayEvent>("agy-native-event", {
+		const card: NativeDisplayEvent = {
 			...event,
 			output: event.output?.slice(0, 4000),
 			diff: event.diff?.slice(0, 12000),
 			command: event.command?.slice(0, 500),
-		});
+		};
+		emitDisplayCard(pi, NATIVE_EVENT_CARD, card, nativeEventSummary(card));
 	};
 	// Native re-exec only emits for builtins actually active in the session;
 	// anything else (or an unknown name) falls back to the wrapper card.
