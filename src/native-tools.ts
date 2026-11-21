@@ -7,6 +7,9 @@
 // re-executed - they replay through the display-only `antigravity` wrapper
 // tool.
 
+import { isOmpHost } from "./omp/host.js";
+import { mapReexecForOmp } from "./omp/native-reexec.js";
+
 export interface NativeToolCall {
 	/** pi builtin tool name (`read`, `ls`, `grep`, `find`). */
 	tool: string;
@@ -50,9 +53,8 @@ const VIEW_PATH_KEYS = [
 const START_LINE_KEYS = ["StartLine", "start_line", "startLine"] as const;
 const END_LINE_KEYS = ["EndLine", "end_line", "endLine"] as const;
 
-/** Map an agy tool step to a native pi toolCall when re-execution is safe.
- *  Returns undefined for everything that must stay on the replay wrapper. */
-export function mapAgyToolToNative(
+/** pi builtin mapping (upstream behaviour). */
+function mapToPiBuiltin(
 	tool: string,
 	args: Record<string, unknown>,
 ): NativeToolCall | undefined {
@@ -103,4 +105,12 @@ export function mapAgyToolToNative(
 		default:
 			return undefined;
 	}
+}
+
+/** Map an agy tool step to a native toolCall when re-execution is safe.
+ *  Returns undefined for everything that must stay on the replay wrapper.
+ *  Under OMP the pi-shaped call is rewritten onto OMP's builtins. */
+export function mapAgyToolToNative(tool: string, args: Record<string, unknown>): NativeToolCall | undefined {
+	const call = mapToPiBuiltin(tool, args);
+	return call && isOmpHost() ? mapReexecForOmp(call) : call;
 }

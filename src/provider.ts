@@ -1431,10 +1431,11 @@ export function consumeActivity(
 				feats.roundTrips.track(id, mapped.tool);
 				// pi requires a reasoning argument on read/edit-class builtin calls
 				// (validated against the wrapped schema); harmless where absent.
-				emitToolUse(stream, blocks, id, mapped.tool, {
-					reasoning: `re-exec of agy ${activity.name} for display`,
-					...mapped.args,
-				} as Record<string, JsonValue>);
+				// OMP builtins take no reasoning argument, and glob rejects unknown keys.
+				const reexecArgs = isOmpHost()
+					? mapped.args
+					: { reasoning: `re-exec of agy ${activity.name} for display`, ...mapped.args };
+				emitToolUse(stream, blocks, id, mapped.tool, reexecArgs as Record<string, JsonValue>);
 				return "parked";
 			}
 			if (feats.nativeActive && !feats.nativeActive("antigravity")) {
