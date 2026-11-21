@@ -64,6 +64,7 @@ function ompSession(kind: "main" | "sub", sessionId: string, tools: string[]) {
 		cwd: process.cwd(),
 		ui: { notify: () => {}, setStatus: () => {} },
 		isProjectTrusted: () => true,
+		getSystemPrompt: () => [],
 		sessionManager: { getSessionId: () => sessionId, getEntries: () => [] },
 	};
 	return {
