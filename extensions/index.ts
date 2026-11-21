@@ -122,6 +122,7 @@ import {
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
+import { initHost } from "../src/omp/host.js";
 
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
@@ -131,6 +132,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Per-factory UI reference so child session_shutdown never clears the
 	// parent's UI context.
 	let activeUi: ExtensionUIContext | null = null;
+	initHost(pi);
 	ensureQueuedMessagesDefaults({ onlyIfDirExists: true });
 
 	// Claim the AskAntigravity tool for this process. pi-ask-antigravity (if also
@@ -411,7 +413,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// ACP tool activity is display-only: durable Pi entries with native-looking
 	// titles and optional diffs. Unlike a synthetic Pi toolCall this does not
 	// re-execute edits, park the turn, or add tool results to model context.
-	if (engine === "acp") {
+	if (engine === "acp" && typeof pi.registerEntryRenderer === "function") {
 		pi.registerEntryRenderer<NativeDisplayEvent>("agy-native-event", (entry, { expanded }, theme) => {
 			const event = entry.data;
 			// Collapsed detail: most-specific signal wins (path, command, agy's own

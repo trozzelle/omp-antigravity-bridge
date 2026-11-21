@@ -28,6 +28,10 @@ const DEV_DEPENDENCIES = {
 	yaml: "^2.9.0",
 };
 
+const DEPENDENCIES = {
+	diff: "^8.0.4",
+};
+
 const EXTRA_KEYWORDS = ["omp", "oh-my-pi"];
 
 /** @param {Record<string, unknown>} pkg */
@@ -38,6 +42,7 @@ export function applyOverrides(pkg) {
 	const files = Array.isArray(pkg.files) ? pkg.files.map(String) : [];
 	const scripts = pkg.scripts && typeof pkg.scripts === "object" ? pkg.scripts : {};
 	const devDependencies = pkg.devDependencies && typeof pkg.devDependencies === "object" ? pkg.devDependencies : {};
+	const dependencies = pkg.dependencies && typeof pkg.dependencies === "object" ? pkg.dependencies : {};
 
 	const out = { ...pkg };
 	out.name = FORK;
@@ -50,6 +55,7 @@ export function applyOverrides(pkg) {
 	out.homepage = `${REPO}#readme`;
 	out.bugs = { url: `${REPO}/issues` };
 	out.files = files.includes("CHANGELOG-OMP.md") ? files : [...files, "CHANGELOG-OMP.md"];
+	out.dependencies = { ...dependencies, ...DEPENDENCIES };
 	out.omp = { extensions: ["./extensions/index.ts"] };
 	out.scripts = { ...scripts, ...SCRIPTS };
 	out.devDependencies = { ...devDependencies, ...DEV_DEPENDENCIES };

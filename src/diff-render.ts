@@ -17,7 +17,15 @@
 
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { generateDiffString } from "@earendil-works/pi-coding-agent";
+import * as piCodingAgent from "@earendil-works/pi-coding-agent";
+import { fallbackGenerateDiffString } from "./omp/diff-fallback.js";
+
+// Namespace import: OMP's pi-coding-agent shim has no generateDiffString, and
+// a named import of a missing export fails the whole module link on Bun.
+const generateDiffString: (oldContent: string, newContent: string) => { diff: string } =
+	"generateDiffString" in piCodingAgent && typeof piCodingAgent.generateDiffString === "function"
+		? piCodingAgent.generateDiffString
+		: fallbackGenerateDiffString;
 
 /** Maximum diff lines emitted for one edit before truncation. */
 export const DEFAULT_MAX_DIFF_LINES = 100;
