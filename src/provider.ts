@@ -1289,6 +1289,25 @@ function emitToolUse(
  *  (unchanged content), so the gate avoids mislabeling them as edits. */
 const ACP_EDIT_TOOLS = new Set(["edit_file", "create_file", "write_to_file", "write_file"]);
 
+// Module scope on purpose: Bun's transpiler turns function declarations inside
+// a switch body into case-local bindings, which later cases cannot reach (TDZ).
+
+/** Bridge callId arg of an MCP tool call (bridge_poll_result requires it). */
+function callIdArg(args: Record<string, unknown>): string | undefined {
+	const v = args.callId;
+	return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+/** File-path argument of an ACP edit tool (observed: `file_path`); other
+ *  tool kinds (execute, read) don't carry one. Returns undefined for
+ *  non-edit tools. */
+function acpEditFileArg(args: Record<string, unknown>): string | undefined {
+	for (const [k, v] of Object.entries(args)) {
+		if (typeof v === "string" && v.trim() && /file|path/i.test(k)) return v;
+	}
+	return undefined;
+}
+
 export function consumeActivity(
 	stream: AssistantMessageEventStream,
 	blocks: BlockState,
@@ -1326,22 +1345,6 @@ export function consumeActivity(
 			}
 			if (looksBackgroundNativeCall(activity.args)) feats.onBackgroundArg?.(activity.args);
 			return "continue";
-/** Bridge callId arg of an MCP tool call (bridge_poll_result requires it). */
-function callIdArg(args: Record<string, unknown>): string | undefined {
-	const v = args.callId;
-	return typeof v === "string" && v.length > 0 ? v : undefined;
-}
-
-/** File-path argument of an ACP edit tool (observed: `file_path`); other
- *  tool kinds (execute, read) don't carry one. Returns undefined for
- *  non-edit tools. */
-function acpEditFileArg(args: Record<string, unknown>): string | undefined {
-	for (const [k, v] of Object.entries(args)) {
-		if (typeof v === "string" && v.trim() && /file|path/i.test(k)) return v;
-	}
-	return undefined;
-}
-
 		case "tool_done": {
 			// Gate C (ACP): the server already executed the tool; nothing parks.
 			// Edit display has TWO paths on ACP:
