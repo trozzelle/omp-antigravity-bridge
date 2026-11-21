@@ -1,7 +1,7 @@
 {
-  "name": "@estebanforge/pi-antigravity-bridge",
-  "version": "1.13.1",
-  "description": "Gemini provider for Pi on the Antigravity ACP server (official Google ACP) or the stream-json agy CLI. Use antigravity/* models in Pi. Full /model picker support. Models runs Pi's tools. ToS safe to use.",
+  "name": "omp-antigravity-bridge",
+  "version": "1.13.1-omp",
+  "description": "OMP port of @estebanforge/pi-antigravity-bridge. Gemini provider for Pi on the Antigravity ACP server (official Google ACP) or the stream-json agy CLI. Use antigravity/* models in Pi. Full /model picker support. Models runs Pi's tools. ToS safe to use.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -16,7 +16,9 @@
     "mcp",
     "mcp-server",
     "provider",
-    "streaming"
+    "streaming",
+    "omp",
+    "oh-my-pi"
   ],
   "license": "MIT",
   "author": {
@@ -26,11 +28,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EstebanForge/pi-extensions.git",
-    "directory": "packages/pi-antigravity-bridge"
-  },
-  "publishConfig": {
-    "access": "public"
+    "url": "git+https://github.com/trozzelle/omp-antigravity-bridge.git"
   },
   "type": "module",
   "files": [
@@ -38,7 +36,8 @@
     "src",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG-OMP.md"
   ],
   "pi": {
     "extensions": [
@@ -57,5 +56,32 @@
     "@estebanforge/pi-ask-shared": "^0.1.6",
     "@estebanforge/pi-tui-dialogs": "^0.1.3",
     "@modelcontextprotocol/sdk": "^1.31.0"
+  },
+  "private": true,
+  "homepage": "https://github.com/trozzelle/omp-antigravity-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/trozzelle/omp-antigravity-bridge/issues"
+  },
+  "omp": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:bun": "bunx --bun vitest run",
+    "smoke:omp": "bash scripts/omp/smoke-load.sh"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.6.0",
+    "@earendil-works/pi-coding-agent": "^1.6.0",
+    "@earendil-works/pi-tui": "^1.6.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typebox": "^1.3.4",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.9",
+    "yaml": "^2.9.0"
   }
 }
