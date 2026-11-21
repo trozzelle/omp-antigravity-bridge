@@ -225,6 +225,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	let currentSessionManager: unknown;
 	let lastConversationId: string | undefined;
 	let realmSession: RealmSession | null = null;
+	// Size of the activate_skill catalog the MCP bridge serves (0 = no bridge
+	// started, so no activate_skill). Read by the OMP system-prompt reduction.
+	let bridgeSkillCount = 0;
 	// Session-only visibility overrides; never change either application's MCP config.
 	const hiddenBridgeTools = new Set<string>();
 	const getBridgeTools = () => bridgedPiTools(pi.getAllTools(), pi.getActiveTools(), loadConfig().bridgeTools, hiddenBridgeTools);
@@ -689,6 +692,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		pendingCompactionHandoff,
 		engine,
 		log: fileLog.log.bind(fileLog),
+		// Same condition listTools uses to offer activate_skill.
+		skillsToolOffered: () => bridgeSkillCount > 0 && loadConfig().bridgeTools !== "none",
 	});
 
 	const joinRealm = () =>
@@ -972,6 +977,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// pi loads project skill locations only after the project is trusted;
 		// mirror that gate. Global skill dirs are always scanned.
 		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {});
+		bridgeSkillCount = skills.length;
 		const listTools = () => {
 			// /mcp and pi.setActiveTools() update the same live catalog. ACP gets
 			// this endpoint through session/new or session/load; no global config write.

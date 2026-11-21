@@ -19,8 +19,6 @@
 
 import {
 	createAssistantMessageEventStream,
-	getCurrentSystemPrompt,
-	getCurrentTools,
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type JsonValue,
@@ -48,6 +46,7 @@ import path from "node:path";
 import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput } from "./diff-render.js";
 import { stageSyspromptAgent } from "./sysprompt-agent.js";
 import { buildImageNote, stagePromptImages } from "./prompt-images.js";
+import { contextSystemPrompt, contextTools, isUserLikeRole } from "./omp/context.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -66,7 +65,7 @@ export const OM_WORKER_TOOL_NAMES = new Set([
 
 /** Detect if a turn belongs to a pi-observational-memory background worker. */
 export function isObservationalMemoryContext(context: TranscriptContext): boolean {
-	const currentTools = getCurrentTools(context.messages);
+	const currentTools = contextTools(context);
 	return currentTools.some((t) => OM_WORKER_TOOL_NAMES.has(t.name));
 }
 
@@ -103,7 +102,7 @@ function zeroUsage(): Usage {
  *  data + mimeType). The pre-#24 extraction shape, kept for the untrusted-
  *  boundary fallback and the single-message resume paths. */
 function lastMessageParts(m: Message | undefined): { text: string | null; images: Array<{ data: string; mimeType: string }> } {
-	if (!m || m.role !== "user") return { text: null, images: [] };
+	if (!m || !isUserLikeRole(m.role)) return { text: null, images: [] };
 	if (typeof m.content === "string") return { text: m.content.trim() || null, images: [] };
 	const images: Array<{ data: string; mimeType: string }> = [];
 	const texts: string[] = [];
@@ -120,7 +119,8 @@ function isBacklogUserShape(text: string): boolean {
 	return text.includes(COMPACTION_MARKER) || text.startsWith(BRANCH_SUMMARY_PREFIX) || text.startsWith(BASH_RUN_PREFIX);
 }
 
-/** The trailing run of role:"user" messages is the active turn: pi stacks
+/** The trailing run of role:"user" messages (plus "developer" under OMP,
+ *  see isUserLikeRole) is the active turn: pi stacks
  *  the prompt, queued nextTurn messages, and before_agent_start notes as
  *  consecutive user messages, so reading only the LAST one dropped every
  *  earlier prompt text and image (issue #24). The run is left-bounded by
@@ -137,13 +137,13 @@ function extractTrailingUserRun(
 ): { prompt: string | null; images: Array<{ data: string; mimeType: string }>; runStart: number; texts: string[] } {
 	const last = messages.length - 1;
 	const empty = { prompt: null, images: [], runStart: messages.length, texts: [] };
-	if (last < 0 || messages[last].role !== "user") return empty;
+	if (last < 0 || !isUserLikeRole(messages[last].role)) return empty;
 	if (!boundaryTrusted) {
 		const only = lastMessageParts(messages[last]);
 		return { prompt: only.text, images: only.images, runStart: last, texts: only.text ? [only.text] : [] };
 	}
 	let start = last;
-	while (start > 0 && messages[start - 1].role === "user") start--;
+	while (start > 0 && isUserLikeRole(messages[start - 1].role)) start--;
 	for (let i = start; i < messages.length; i++) {
 		if (isBacklogUserShape(blocksToText(messages[i].content))) start = i + 1;
 	}
@@ -245,15 +245,19 @@ export const TOOL_PRIORITY_NOTE =
 
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
- *  Pass systemPrompt only on a fresh conversation (see runTurnDriver). */
+ *  Pass systemPrompt only on a fresh conversation (see runTurnDriver).
+ *  sendEmptySystemPrompt: ship the block (preamble, tool-priority note, end
+ *  marker) even when systemPrompt is empty; OMP's reduced prompt can be. */
 export function buildFullPrompt(
 	systemPrompt: string | undefined,
 	digest: string,
 	prompt: string,
+	sendEmptySystemPrompt = false,
 ): string {
 	const parts: string[] = [];
-	if (systemPrompt) {
-		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${systemPrompt}\n\n${TOOL_PRIORITY_NOTE}\n\n${SYSTEM_PROMPT_END}`);
+	if (systemPrompt || sendEmptySystemPrompt) {
+		const body = systemPrompt ? `${systemPrompt}\n\n` : "";
+		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${body}${TOOL_PRIORITY_NOTE}\n\n${SYSTEM_PROMPT_END}`);
 	}
 	if (digest) {
 		parts.push(`${DIGEST_PREAMBLE}\n\n${digest}`);
@@ -441,7 +445,7 @@ export function buildContextDigest(
 			const t = blocksToText(m.content).trim();
 			if (!t) continue;
 			deltaParts.push(`[assistant turn from ${m.provider}]\n${t}`);
-		} else if (m.role === "user") {
+		} else if (isUserLikeRole(m.role)) {
 			const t = blocksToText(m.content);
 			if (t.includes(COMPACTION_MARKER)) continue; // delivered as the summary part
 			if (!t.trim()) continue;
@@ -596,6 +600,10 @@ export interface StreamSimpleDeps {
 	/** Session keys rotated on `session_compact` awaiting a one-shot
 	 *  compaction handoff into a fresh agy conversation. */
 	pendingCompactionHandoff?: Set<string>;
+	/** OMP: whether the MCP bridge offers `activate_skill` this session. The
+	 *  OMP system-prompt reduction keeps the skills list only when it does.
+	 *  Absent = not offered. Ignored under pi. */
+	skillsToolOffered?: () => boolean;
 	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
 	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
@@ -1299,6 +1307,8 @@ export interface DriverDeps {
 	/** Session keys rotated on `session_compact` awaiting a one-shot
 	 *  compaction handoff into a fresh agy conversation. */
 	pendingCompactionHandoff?: Set<string>;
+	/** OMP: whether `activate_skill` is offered (see StreamSimpleDeps). */
+	skillsToolOffered?: () => boolean;
 	/** Active engine (config), for engine-scoped session keys. */
 	engine: "stream-json" | "acp";
 	/** Daily file log sink for pre-dispatch errors (see StreamSimpleDeps). */
@@ -1837,13 +1847,17 @@ async function runTurnDriver(
 		// ACP keeps the inline block (JSON-RPC transport; --agent is a CLI
 		// feature). A user-configured agent always wins: never clobber it.
 		const gateOpen = config.systemPrompt && !existing?.conversationId;
-		const rawSysPrompt = gateOpen ? getCurrentSystemPrompt(context.messages) || undefined : undefined;
+		// undefined = no system prompt; "" = OMP prompt reduced to nothing, which
+		// still ships the tool-priority note (pi never produces "").
+		const rawSysPrompt = gateOpen
+			? contextSystemPrompt(context, { skillsTool: deps.skillsToolOffered?.() === true })
+			: undefined;
 		let sysPrompt = rawSysPrompt;
 		let agent = config.agent;
 		if (deps.engine !== "acp") {
-			if (rawSysPrompt && !config.agent) {
+			if (rawSysPrompt !== undefined && !config.agent) {
 				const stagedName = stageSyspromptAgent(
-					[SYSTEM_PROMPT_PREAMBLE, rawSysPrompt, TOOL_PRIORITY_NOTE].join("\n\n"),
+					[SYSTEM_PROMPT_PREAMBLE, rawSysPrompt, TOOL_PRIORITY_NOTE].filter((part) => part.length > 0).join("\n\n"),
 				);
 				if (stagedName) {
 					agent = stagedName;
@@ -1852,14 +1866,14 @@ async function runTurnDriver(
 				}
 				// Staging failed: inline fallback. The silent-drop guard below
 				// keeps the resulting cap failure visible instead of quiet.
-			} else if (rawSysPrompt && config.agent && !warnedUserAgentConflict) {
+			} else if (rawSysPrompt !== undefined && config.agent && !warnedUserAgentConflict) {
 				warnedUserAgentConflict = true;
 				deps.log?.(
 					"sysprompt-agent-conflict",
 					{ agent: config.agent, effect: "system prompt ships inline in the prompt (over-cap drop risk)" },
 					"warn",
 				);
-			} else if (!rawSysPrompt && !config.agent && existing?.conversationId) {
+			} else if (rawSysPrompt === undefined && !config.agent && existing?.conversationId) {
 				// Gate closed (bound conversation): pass the carrier staged for
 				// THIS conversation, if any, so the driver profile never drifts on
 				// "agent" and a respawned process reloads its own instructions.
@@ -1873,7 +1887,7 @@ async function runTurnDriver(
 		const fullPrompt =
 			(late.length > 0
 				? buildLateResultPrompt(late, deliveredPrompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt)) +
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt, sysPrompt === "")) +
 			stageImageNote(runImages);
 		try {
 			handle = await deps.driver.run({
@@ -2215,6 +2229,7 @@ export function createStreamSimple(
 				// conversationId under the wrong engine scope.
 				engine: selected === deps.acpDriver ? "acp" : "stream-json",
 				log: deps.log,
+				skillsToolOffered: deps.skillsToolOffered,
 			});
 		} else {
 			// Miswired extension: no driver means no engine. Fail the turn visibly
