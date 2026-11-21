@@ -43,7 +43,11 @@ export function cleanupManagedAcpInstall(root: string = defaultManagedAcpRoot())
 	}
 	if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return { removedBuilds: [], rootRemoved: false };
 
-	const entries = fs.readdirSync(root, { withFileTypes: true });
+	// Sorted: readdir order differs across filesystems and runtimes (Bun vs
+	// Node); removedBuilds must come back in the same order everywhere.
+	const entries = fs
+		.readdirSync(root, { withFileTypes: true })
+		.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	const interrupted = new Set<string>();
 	for (const entry of entries) {
 		const match = /^\.download-(.+)\.zip$/.exec(entry.name);
