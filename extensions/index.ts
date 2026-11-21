@@ -59,7 +59,7 @@ import {
 	type GatePolicy,
 } from "../src/approval-gate.js";
 import { acpPermissionPolicy, effectiveGateMode, loadOmpSettingsLookup, readOmpApprovalSettings } from "../src/omp/approval-settings.js";
-import { createOmpApprovalTool, OMP_APPROVAL_TOOL_NAME } from "../src/omp/approval-tool.js";
+import { wireOmpApprovalGate } from "../src/omp/approval-gate.js";
 import { hookScriptSource, removeGateHooks, stageGateHooks, sweepWorkspaceGateGroups } from "../src/approval-hook.js";
 import { StreamDriver } from "../src/driver.js";
 import { createOneshotProvider } from "../src/omp/oneshot-driver.js";
@@ -1183,6 +1183,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					// Gate off: drop this session's private hooks file.
 					const unstaged = removeGateHooks();
 					if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
+				} else if (isOmpHost()) {
+					// OMP (spec P8): the realm's hook script, staged once, and one
+					// approval tool instead of shadowed builtins (src/omp/approval-gate.ts).
+					wireOmpApprovalGate(pi, { first: r.first, handle: r.handle, mode, parkBudgetMs: APPROVAL_PARK_MS, log: fileLog.log.bind(fileLog) });
+					// Wired only after the approval tool is registered, as below.
+					roundTrips.approvalPark = r.handle.approvals;
 				} else {
 					// Script: per-realm file; 0600 because the realm token is
 					// embedded (peer review 2026-09-07). Re-stage idempotently so
@@ -1209,67 +1215,52 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					});
 					fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
 
-					const handle = r.handle;
-					if (isOmpHost()) {
-						// OMP (spec P8): never shadow OMP's builtins. One net-new tool
-						// carries each approval through OMP's own approval gate, which
-						// prompts or auto-approves BEFORE execute(): no bridge confirm.
-						pi.registerTool(
-							createOmpApprovalTool({
-								cwd: process.cwd(),
-								askMode: () => loadConfig().approvals.mode,
-								hostPolicies: () => readOmpApprovalSettings(pi)?.policies,
-								verifyTicket: (t) => handle.approvals.has(t),
-							}),
-						);
-						fileLog.log("approval-tool-registered", { tool: OMP_APPROVAL_TOOL_NAME }, "info");
-					} else {
-						// Shadow bases: factory twins of pi's own builtins (public API).
-						// pi.getAllTools() is unusable here: it returns ToolInfo, which
-						// strips execute. Marker calls never execute; non-marker calls
-						// delegate to the twins, so behavior matches the standard
-						// builtins (session-level bash-operations overrides are not
-						// inherited; documented in README).
-						const gateCwd = process.cwd();
-						const bases: Record<string, AnyToolDefinition> = {
-							bash: createBashToolDefinition(gateCwd) as unknown as AnyToolDefinition,
-							write: createWriteToolDefinition(gateCwd) as unknown as AnyToolDefinition,
-							edit: createEditToolDefinition(gateCwd) as unknown as AnyToolDefinition,
-						};
-						const askMode = cfg.approvals.mode;
-						const policy: GatePolicy = async ({ tool, params, ctx }) => {
-							if (askMode === "allow") return { allow: true };
-							if (askMode === "deny") {
-								return { allow: false, reason: `blocked by approval gate (mode: deny): ${tool}` };
-							}
-							const extCtx = ctx as { hasUI?: boolean; ui?: Pick<ExtensionUIContext, "confirm"> } | undefined;
-							if (!extCtx?.hasUI || typeof extCtx.ui?.confirm !== "function") {
-								return { allow: false, reason: `approval gate: no UI to approve ${tool} (headless)` };
-							}
-							const what =
-								typeof params.command === "string"
-									? params.command
-									: typeof params.path === "string"
-										? params.path
-										: JSON.stringify(stripMarkerFields(params)).slice(0, 200);
-							// Dialog lock: parallel agy tool approvals queue up instead of
-							// clobbering the live dialog (which silently loses the approval).
-							// Capture the narrowed method: TS drops the guard's narrowing
-							// inside the deferred closure.
-							const uiConfirm = extCtx.ui.confirm.bind(extCtx.ui);
-							const ok = await withDialogLock(() =>
-								uiConfirm(`agy ${tool}?`, what, { timeout: APPROVAL_PARK_MS }),
-							);
-							return ok ? { allow: true } : { allow: false, reason: `declined in pi (agy ${tool})` };
-						};
-						for (const [name, base] of Object.entries(bases)) {
-							pi.registerTool(
-								createShadowTool(base, policy, { verifyTicket: (t) => handle.approvals.has(t) }),
-							);
+					// Shadow bases: factory twins of pi's own builtins (public API).
+					// pi.getAllTools() is unusable here: it returns ToolInfo, which
+					// strips execute. Marker calls never execute; non-marker calls
+					// delegate to the twins, so behavior matches the standard
+					// builtins (session-level bash-operations overrides are not
+					// inherited; documented in README).
+					const gateCwd = process.cwd();
+					const bases: Record<string, AnyToolDefinition> = {
+						bash: createBashToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+						write: createWriteToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+						edit: createEditToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+					};
+					const askMode = cfg.approvals.mode;
+					const policy: GatePolicy = async ({ tool, params, ctx }) => {
+						if (askMode === "allow") return { allow: true };
+						if (askMode === "deny") {
+							return { allow: false, reason: `blocked by approval gate (mode: deny): ${tool}` };
 						}
+						const extCtx = ctx as { hasUI?: boolean; ui?: Pick<ExtensionUIContext, "confirm"> } | undefined;
+						if (!extCtx?.hasUI || typeof extCtx.ui?.confirm !== "function") {
+							return { allow: false, reason: `approval gate: no UI to approve ${tool} (headless)` };
+						}
+						const what =
+							typeof params.command === "string"
+								? params.command
+								: typeof params.path === "string"
+									? params.path
+									: JSON.stringify(stripMarkerFields(params)).slice(0, 200);
+						// Dialog lock: parallel agy tool approvals queue up instead of
+						// clobbering the live dialog (which silently loses the approval).
+						// Capture the narrowed method: TS drops the guard's narrowing
+						// inside the deferred closure.
+						const uiConfirm = extCtx.ui.confirm.bind(extCtx.ui);
+						const ok = await withDialogLock(() =>
+							uiConfirm(`agy ${tool}?`, what, { timeout: APPROVAL_PARK_MS }),
+						);
+						return ok ? { allow: true } : { allow: false, reason: `declined in pi (agy ${tool})` };
+					};
+					const handle = r.handle;
+					for (const [name, base] of Object.entries(bases)) {
+						pi.registerTool(
+							createShadowTool(base, policy, { verifyTicket: (t) => handle.approvals.has(t) }),
+						);
 					}
-					// The park is wired ONLY after the approval tool(s) are registered:
-					// an approval toolUse must never dispatch to a REAL builtin and
+					// The park is wired ONLY after the shadows are registered: an
+					// approval toolUse must never dispatch to the REAL builtin and
 					// execute locally.
 					roundTrips.approvalPark = handle.approvals;
 				}

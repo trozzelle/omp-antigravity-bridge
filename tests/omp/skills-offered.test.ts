@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import bridgeExtension from "../../extensions/index.js";
 import { __setHostForTests } from "../../src/omp/host.js";
-import { __resetRealmForTests, type BridgeStreamSimple } from "../../src/omp/runtime.js";
+import { __resetRealmForTests, type BridgeStreamSimple } from "../../src/runtime.js";
 import { model, OMP_SYSTEM_PROMPT, OMP_TOOLS, ompContext, ompUser } from "./fixtures/omp-context.js";
 
 const listener = vi.hoisted(() => ({ fails: false }));
