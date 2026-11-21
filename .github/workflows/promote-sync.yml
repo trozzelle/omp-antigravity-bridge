@@ -1,0 +1,117 @@
+name: Promote sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Sync branch to promote (sync/<upstream-short-sha>)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: promote-sync
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: ${{ inputs.branch }}
+    steps:
+      - name: Validate input
+        run: |
+          case "$BRANCH" in
+            sync/*) ;;
+            *) echo "::error::branch must be sync/<sha>, got '$BRANCH'"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0 # tags and the main/upstream ancestry checks
+
+      - name: Configure git identity for the tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Verify the sync branch
+        id: verify
+        run: |
+          git fetch --quiet --tags --force origin
+          head="$(git rev-parse HEAD)"
+          main="$(git rev-parse origin/main)"
+          upstream="$(git rev-parse origin/upstream)"
+          git merge-base --is-ancestor "$upstream" "$head" ||
+            { echo "::error::$BRANCH is not based on origin/upstream"; exit 1; }
+
+          pr="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          [ -n "$pr" ] || { echo "::error::no open pull request for $BRANCH"; exit 1; }
+          base="$(gh pr view "$pr" --json body --jq '.body' |
+            sed -n 's/.*<!-- omp-sync main-base=\([0-9a-f]\{40\}\) .*/\1/p' | head -n 1)"
+          [ -n "$base" ] || { echo "::error::PR #$pr lacks the omp-sync main-base marker"; exit 1; }
+          [ "$base" = "$main" ] ||
+            { echo "::error::main moved since $BRANCH was cut ($base -> $main); re-run Sync upstream with force"; exit 1; }
+
+          # Every check run on the head commit must be complete and green, and CI must be among them.
+          runs="$RUNNER_TEMP/check-runs.json"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?per_page=100" \
+            --jq '.check_runs[] | {name, status, conclusion}' >"$runs"
+          if ! jq -e -s 'any(.[]; .name == "checks")' "$runs" >/dev/null; then
+            echo "::error::CI has not run on ${head}; dispatch ci.yml on $BRANCH first"; exit 1
+          fi
+          # This job's own run is excluded in case it was dispatched from the sync branch.
+          bad="$(jq -r -s '.[] | select(.name != "promote") | select(.status != "completed" or (.conclusion | IN("success", "skipped", "neutral") | not)) | "\(.name): \(.status)/\(.conclusion)"' "$runs")"
+          if [ -n "$bad" ]; then
+            echo "::error::check runs on ${head} are not all green:"
+            echo "$bad"
+            exit 1
+          fi
+
+          # Release tag v<upstream-version>-omp.<N>; N counts releases per upstream version.
+          pkg_version="$(node -p 'require("./package.json").version')"
+          version="${pkg_version%-omp}"
+          short="${BRANCH#sync/}"
+          upstream_version="$(git show "${short}:package.json" | node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>console.log(JSON.parse(s).version))')"
+          [ "$version" = "$upstream_version" ] ||
+            { echo "::error::package.json version $pkg_version does not match upstream $upstream_version"; exit 1; }
+          last="$(git tag -l "v${version}-omp.*" | sed -n "s/^v${version//./\\.}-omp\.\([0-9][0-9]*\)$/\1/p" | sort -n | tail -n 1)"
+          tag="v${version}-omp.$(( ${last:-0} + 1 ))"
+
+          {
+            echo "head=$head"
+            echo "main=$main"
+            echo "pr=$pr"
+            echo "tag=$tag"
+          } >>"$GITHUB_OUTPUT"
+          echo "Promoting $BRANCH ($head) as $tag over main $main"
+
+      - name: Force-push main and tag the release
+        env:
+          HEAD_SHA: ${{ steps.verify.outputs.head }}
+          MAIN_SHA: ${{ steps.verify.outputs.main }}
+          TAG: ${{ steps.verify.outputs.tag }}
+        run: |
+          git tag -a "$TAG" -m "$TAG" "$HEAD_SHA"
+          git push --atomic --force-with-lease="main:${MAIN_SHA}" origin "${HEAD_SHA}:refs/heads/main" "refs/tags/${TAG}"
+
+      - name: Close the sync pull request
+        env:
+          PR: ${{ steps.verify.outputs.pr }}
+          TAG: ${{ steps.verify.outputs.tag }}
+        run: |
+          # GitHub may already mark the PR merged once main points at its head.
+          state="$(gh pr view "$PR" --json state --jq '.state')"
+          if [ "$state" = "OPEN" ]; then
+            gh pr close "$PR" --comment "Promoted to main as ${TAG}."
+          else
+            gh pr comment "$PR" --body "Promoted to main as ${TAG}."
+          fi
+          git push origin --delete "$BRANCH"
