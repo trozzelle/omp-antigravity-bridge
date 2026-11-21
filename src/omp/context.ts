@@ -18,6 +18,23 @@ export function isUserLikeRole(role: unknown): boolean {
 	return role === "user" || (role === "developer" && isOmpHost());
 }
 
+/** Leading lines of OMP's compaction and handoff summary messages. Branch
+ *  summaries are not compactions; see OMP_BRANCH_SUMMARY_PREFIX. */
+export const OMP_COMPACTION_PREFIXES: readonly string[] = [
+	"Prior model work/tool state available.",
+	"Context replaced. The <handoff>",
+];
+
+/** Leading line of OMP's branch-return summary message. */
+export const OMP_BRANCH_SUMMARY_PREFIX = "Branch-return summary:";
+
+/** True for the text of an OMP compaction or handoff summary message. */
+export function isOmpCompactionSummary(text: string): boolean {
+	if (!isOmpHost()) return false;
+	const head = text.trimStart();
+	return OMP_COMPACTION_PREFIXES.some((prefix) => head.startsWith(prefix));
+}
+
 /** First `<tag>` … `</tag>` block whose tags sit alone on their lines, the way
  *  OMP's templates render them. */
 function lineBlock(text: string, tag: string): string | undefined {
@@ -135,16 +152,37 @@ function messageText(content: unknown): string {
 		.trim();
 }
 
-/** The trailing run of user-like messages (OMP often appends developer
- *  notices after the user's message, or sends a developer message alone). */
+/** True for a user-like message OMP generated as a summary (compaction,
+ *  handoff or branch return) rather than one the user or a hook sent. */
+function isSummaryMessage(message: unknown): boolean {
+	const text = messageText(contentOf(message)).trimStart();
+	return isOmpCompactionSummary(text) || (isOmpHost() && text.startsWith(OMP_BRANCH_SUMMARY_PREFIX));
+}
+
+/** Index where the trailing run of user-like messages starts (OMP often
+ *  appends developer notices after the user's message, or sends a developer
+ *  message alone); `messages.length` when the last message is not user-like.
+ *  The run stops at an OMP summary message: after `/compact` the transcript
+ *  is `[summary, user prompt]` and only the prompt belongs to this turn (the
+ *  summary ships through the digest). A tail made only of summaries is the
+ *  whole run, so it still has something to send. */
+export function trailingUserLikeStart(messages: readonly unknown[]): number {
+	const scan = (stopAtSummary: boolean): number => {
+		let start = messages.length;
+		while (start > 0) {
+			const m = messages[start - 1];
+			if (typeof m !== "object" || m === null || !("role" in m) || !isUserLikeRole(m.role)) break;
+			if (stopAtSummary && isSummaryMessage(m)) break;
+			start--;
+		}
+		return start;
+	};
+	const start = scan(true);
+	return start === messages.length ? scan(false) : start;
+}
+
 function trailingUserLike(messages: readonly unknown[]): unknown[] {
-	let start = messages.length;
-	while (start > 0) {
-		const m = messages[start - 1];
-		if (typeof m !== "object" || m === null || !("role" in m) || !isUserLikeRole(m.role)) break;
-		start--;
-	}
-	return messages.slice(start);
+	return messages.slice(trailingUserLikeStart(messages));
 }
 
 function contentOf(message: unknown): unknown {
