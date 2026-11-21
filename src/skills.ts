@@ -10,6 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { skillsFromCommands, skillVisibility, type SkillCommandsHost, type SkillsFromCommandsOptions } from "./omp/skills.js";
 
 export const ACTIVATE_SKILL_TOOL_NAME = "activate_skill";
 
@@ -204,4 +205,15 @@ export function activateSkillSchema(skills: SkillLite[]): Record<string, unknown
 		},
 		required: ["name"],
 	};
+}
+
+/** The session's activate_skill catalog: the host's own skill list
+ *  (pi.getCommands, see src/omp/skills.ts) when it lists any, else the
+ *  directory scan, filtered the same way. */
+export function sessionSkills(pi: SkillCommandsHost, scan: SkillScanOptions, options?: SkillsFromCommandsOptions): SkillLite[] {
+	const fromHost = skillsFromCommands(pi, options);
+	if (fromHost.length > 0) return fromHost;
+	const visible = skillVisibility(options);
+	const scanned = scanSkills(scan);
+	return visible ? scanned.filter(visible) : scanned;
 }

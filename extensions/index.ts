@@ -99,7 +99,7 @@ import {
 	catalogSummary,
 	findSkillByName,
 	readSkillBody,
-	scanSkills,
+	sessionSkills,
 	type SkillLite,
 } from "../src/skills.js";
 import { mapAgyToolToNative } from "../src/native-tools.js";
@@ -956,9 +956,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// OMP runs a worker-thread session's provider calls on the main thread,
 		// so a listener started in this realm would never be called.
 		if (isOmpHost() && isWorkerRealm()) return;
-		// pi loads project skill locations only after the project is trusted;
-		// mirror that gate. Global skill dirs are always scanned.
-		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {});
+		// The host's own skill list when it has one (pi.getCommands, which
+		// already applies pi's project-trust gate); otherwise scan, loading
+		// project skill locations only after the project is trusted.
+		const skills: SkillLite[] = sessionSkills(pi, ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {}, {
+			systemPrompt: () => ctx.getSystemPrompt(),
+		});
 		bridgeSkillCount = skills.length;
 		const listTools = () => {
 			// /mcp and pi.setActiveTools() update the same live catalog. ACP gets
