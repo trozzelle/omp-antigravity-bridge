@@ -59,7 +59,7 @@ import {
 	type GatePolicy,
 } from "../src/approval-gate.js";
 import { acpPermissionPolicy, effectiveGateMode, loadOmpSettingsLookup, readOmpApprovalSettings } from "../src/omp/approval-settings.js";
-import { createOmpApprovalTool, OMP_APPROVAL_TOOL_NAME } from "../src/omp/approval-tool.js";
+import { wireOmpApprovalGate } from "../src/omp/approval-gate.js";
 import { hookScriptSource, removeGateHooks, stageGateHooks, sweepWorkspaceGateGroups } from "../src/approval-hook.js";
 import { StreamDriver } from "../src/driver.js";
 import { createOneshotProvider } from "../src/omp/oneshot-driver.js";
@@ -121,7 +121,6 @@ import { withDialogLock } from "../src/dialog-lock.js";
 import { initHost, isOmpHost } from "../src/omp/host.js";
 import { NATIVE_EVENT_CARD, POLL_RUN_CARD, emitDisplayCard, nativeEventSummary, pollRunSummary, registerCardRenderers } from "../src/omp/cards.js";
 import {
-	approvalHookScriptPath,
 	isWorkerRealm,
 	liveSessionId,
 	ompRealm,
@@ -1175,97 +1174,84 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					// own their own per-pid files; nothing shared to preserve.
 					const unstaged = removeGateHooks();
 					if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
+				} else if (isOmpHost()) {
+					// OMP (spec P8): the realm's hook script, staged once, and one
+					// approval tool instead of shadowed builtins (src/omp/approval-gate.ts).
+					wireOmpApprovalGate(pi, { first: r.first, handle: r.handle, mode, parkBudgetMs: APPROVAL_PARK_MS, log: fileLog.log.bind(fileLog) });
+					// Wired only after the approval tool is registered, as below.
+					roundTrips.approvalPark = r.handle.approvals;
 				} else {
-					// Script: one per realm (approvalHookScriptPath); 0600 because
-					// the listener token is embedded (peer review 2026-09-07). Under
-					// OMP only the session that started the listener stages it; the
-					// realm's last session removes it.
-					if (r.first) {
-						const scriptPath = approvalHookScriptPath();
-						fs.mkdirSync(path.dirname(scriptPath), { recursive: true, mode: 0o700 });
-						fs.writeFileSync(
-							scriptPath,
-							hookScriptSource({
-								port: r.handle.port,
-								token: r.handle.realmToken,
-								deadlineMs: APPROVAL_PARK_MS,
-							}),
-							{ mode: 0o600 },
-						);
-						gateScriptPath = scriptPath;
-						// Private per-pid staging (issue #5 isolation): the gate group goes
-						// into the bridge add-dir that ONLY this session's agy receives.
-						// Standalone sessions in the workspace never load it.
-						const staged = stageGateHooks(bridgeMcpConfigDir(), {
+					// Script: per-pid file; 0600 because the bridge token is
+					// embedded (peer review 2026-09-07).
+					const scriptPath = path.join(logsDir(), `approval-hook-${process.pid}.js`);
+					fs.mkdirSync(path.dirname(scriptPath), { recursive: true, mode: 0o700 });
+					fs.writeFileSync(
+						scriptPath,
+						hookScriptSource({
 							port: r.handle.port,
-							token: r.handle.realmToken,
-							scriptPath,
-							parkBudgetMs: APPROVAL_PARK_MS,
-						});
-						fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
-					}
+							token: r.handle.token,
+							deadlineMs: APPROVAL_PARK_MS,
+						}),
+						{ mode: 0o600 },
+					);
+					gateScriptPath = scriptPath;
+					// Private per-pid staging (issue #5 isolation): the gate group goes
+					// into the bridge add-dir that ONLY this session's agy receives.
+					// Standalone sessions in the workspace never load it.
+					const staged = stageGateHooks(bridgeMcpConfigDir(), {
+						port: r.handle.port,
+						token: r.handle.token,
+						scriptPath,
+						parkBudgetMs: APPROVAL_PARK_MS,
+					});
+					fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
 
-					const handle = r.handle;
-					if (isOmpHost()) {
-						// OMP (spec P8): never shadow OMP's builtins. One net-new tool
-						// carries each approval through OMP's own approval gate, which
-						// prompts or auto-approves BEFORE execute(): no bridge confirm.
-						pi.registerTool(
-							createOmpApprovalTool({
-								cwd: process.cwd(),
-								askMode: () => loadConfig().approvals.mode,
-								hostPolicies: () => readOmpApprovalSettings(pi)?.policies,
-								verifyTicket: (t) => handle.approvals.has(t),
-							}),
-						);
-						fileLog.log("approval-tool-registered", { tool: OMP_APPROVAL_TOOL_NAME }, "info");
-					} else {
-						// Shadow bases: factory twins of pi's own builtins (public API).
-						// pi.getAllTools() is unusable here: it returns ToolInfo, which
-						// strips execute. Marker calls never execute; non-marker calls
-						// delegate to the twins, so behavior matches the standard
-						// builtins (session-level bash-operations overrides are not
-						// inherited; documented in README).
-						const gateCwd = process.cwd();
-						const bases: Record<string, AnyToolDefinition> = {
-							bash: createBashToolDefinition(gateCwd) as unknown as AnyToolDefinition,
-							write: createWriteToolDefinition(gateCwd) as unknown as AnyToolDefinition,
-							edit: createEditToolDefinition(gateCwd) as unknown as AnyToolDefinition,
-						};
-						const askMode = cfg.approvals.mode;
-						const policy: GatePolicy = async ({ tool, params, ctx }) => {
-							if (askMode === "allow") return { allow: true };
-							if (askMode === "deny") {
-								return { allow: false, reason: `blocked by approval gate (mode: deny): ${tool}` };
-							}
-							const extCtx = ctx as { hasUI?: boolean; ui?: Pick<ExtensionUIContext, "confirm"> } | undefined;
-							if (!extCtx?.hasUI || typeof extCtx.ui?.confirm !== "function") {
-								return { allow: false, reason: `approval gate: no UI to approve ${tool} (headless)` };
-							}
-							const what =
-								typeof params.command === "string"
-									? params.command
-									: typeof params.path === "string"
-										? params.path
-										: JSON.stringify(stripMarkerFields(params)).slice(0, 200);
-							// Dialog lock: parallel agy tool approvals queue up instead of
-							// clobbering the live dialog (which silently loses the approval).
-							// Capture the narrowed method: TS drops the guard's narrowing
-							// inside the deferred closure.
-							const uiConfirm = extCtx.ui.confirm.bind(extCtx.ui);
-							const ok = await withDialogLock(() =>
-								uiConfirm(`agy ${tool}?`, what, { timeout: APPROVAL_PARK_MS }),
-							);
-							return ok ? { allow: true } : { allow: false, reason: `declined in pi (agy ${tool})` };
-						};
-						for (const [name, base] of Object.entries(bases)) {
-							pi.registerTool(
-								createShadowTool(base, policy, { verifyTicket: (t) => handle.approvals.has(t) }),
-							);
+					// Shadow bases: factory twins of pi's own builtins (public API).
+					// pi.getAllTools() is unusable here: it returns ToolInfo, which
+					// strips execute. Marker calls never execute; non-marker calls
+					// delegate to the twins, so behavior matches the standard
+					// builtins (session-level bash-operations overrides are not
+					// inherited; documented in README).
+					const gateCwd = process.cwd();
+					const bases: Record<string, AnyToolDefinition> = {
+						bash: createBashToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+						write: createWriteToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+						edit: createEditToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+					};
+					const askMode = cfg.approvals.mode;
+					const policy: GatePolicy = async ({ tool, params, ctx }) => {
+						if (askMode === "allow") return { allow: true };
+						if (askMode === "deny") {
+							return { allow: false, reason: `blocked by approval gate (mode: deny): ${tool}` };
 						}
+						const extCtx = ctx as { hasUI?: boolean; ui?: Pick<ExtensionUIContext, "confirm"> } | undefined;
+						if (!extCtx?.hasUI || typeof extCtx.ui?.confirm !== "function") {
+							return { allow: false, reason: `approval gate: no UI to approve ${tool} (headless)` };
+						}
+						const what =
+							typeof params.command === "string"
+								? params.command
+								: typeof params.path === "string"
+									? params.path
+									: JSON.stringify(stripMarkerFields(params)).slice(0, 200);
+						// Dialog lock: parallel agy tool approvals queue up instead of
+						// clobbering the live dialog (which silently loses the approval).
+						// Capture the narrowed method: TS drops the guard's narrowing
+						// inside the deferred closure.
+						const uiConfirm = extCtx.ui.confirm.bind(extCtx.ui);
+						const ok = await withDialogLock(() =>
+							uiConfirm(`agy ${tool}?`, what, { timeout: APPROVAL_PARK_MS }),
+						);
+						return ok ? { allow: true } : { allow: false, reason: `declined in pi (agy ${tool})` };
+					};
+					const handle = r.handle;
+					for (const [name, base] of Object.entries(bases)) {
+						pi.registerTool(
+							createShadowTool(base, policy, { verifyTicket: (t) => handle.approvals.has(t) }),
+						);
 					}
-					// The park is wired ONLY after the approval tool(s) are registered:
-					// an approval toolUse must never dispatch to a REAL builtin and
+					// The park is wired ONLY after the shadows are registered: an
+					// approval toolUse must never dispatch to the REAL builtin and
 					// execute locally.
 					roundTrips.approvalPark = handle.approvals;
 				}
@@ -1293,29 +1279,30 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		await acpDriver.close("recycle", "session shutdown");
 		roundTrips.failAll(FAIL_REASON_SHUTDOWN);
 		await h?.close();
-		hiddenBridgeTools.clear();
 		if (ompSession) {
 			// OMP: the listener, its add-dir (staged hooks), the hook script and
 			// the global entry serve every session in this realm; the last
-			// session to leave removes them.
+			// session to leave removes them (src/omp/runtime.ts).
+			hiddenBridgeTools.clear();
 			await oneshots?.close();
 			const session = ompSession;
 			ompSession = null;
 			await session.leave();
-		} else {
-			if (engine === "stream-json") unregisterBridgeServer(process.pid);
-			// Approval gate: unstage hooks and remove the per-pid script. Pending
-			// approvals already failed closed via handle close (bridge shutdown deny).
-			const unstaged = removeGateHooks();
-			if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
-			if (gateScriptPath) {
-				try {
-					fs.rmSync(gateScriptPath, { force: true });
-				} catch {
-					/* best effort */
-				}
-				gateScriptPath = null;
+			return;
+		}
+		if (engine === "stream-json") unregisterBridgeServer(process.pid);
+		hiddenBridgeTools.clear();
+		// Approval gate: unstage hooks and remove the per-pid script. Pending
+		// approvals already failed closed via handle close (bridge shutdown deny).
+		const unstaged = removeGateHooks();
+		if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
+		if (gateScriptPath) {
+			try {
+				fs.rmSync(gateScriptPath, { force: true });
+			} catch {
+				/* best effort */
 			}
+			gateScriptPath = null;
 		}
 	});
 }
