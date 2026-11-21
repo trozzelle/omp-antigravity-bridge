@@ -11,3 +11,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: upstream sync automation, CI workflows, load smoke and live checklist (sync)
 - omp: read OMP's system prompt, tools and developer-role messages (context)
 - omp: flush session bindings before shutdown (sessions) [upstreamable]
+- omp: keep OMP one-shot calls and side turns off the session's conversation and recognise OMP compaction summaries (compaction)

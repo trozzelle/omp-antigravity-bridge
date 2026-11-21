@@ -48,6 +48,7 @@ import { stageSyspromptAgent } from "./sysprompt-agent.js";
 import { buildImageNote, stagePromptImages } from "./prompt-images.js";
 import { contextSystemPrompt, contextTools, isUserLikeRole, ompUserImages, ompUserPrompt } from "./omp/context.js";
 import { isOmpHost } from "./omp/host.js";
+import { isOmpCompactionSummary, isOmpOneshotCall, isSideTurnSession, ompHandoffBody } from "./omp/oneshot.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -232,6 +233,8 @@ function blocksToText(content: unknown): string {
 /** A compaction summary arrives wrapped in pi's boilerplate prefix/suffix.
  *  Return just the summary body. */
 function stripCompactionWrapping(t: string): string {
+	const handoff = ompHandoffBody(t);
+	if (handoff !== undefined) return handoff;
 	const open = t.indexOf("<summary>");
 	const close = t.lastIndexOf("</summary>");
 	if (open >= 0 && close > open) return t.slice(open + "<summary>".length, close).trim();
@@ -300,7 +303,8 @@ export function findLastCompactionIdx(messages: Message[]): number {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i];
 		if (m.role !== "user") continue;
-		if (blocksToText(m.content).includes(COMPACTION_MARKER)) return i;
+		const text = blocksToText(m.content);
+		if (text.includes(COMPACTION_MARKER) || isOmpCompactionSummary(text)) return i;
 	}
 	return -1;
 }
@@ -383,7 +387,7 @@ export function buildContextDigest(
 			deltaParts.push(`[assistant turn from ${m.provider}]\n${t}`);
 		} else if (isUserLikeRole(m.role)) {
 			const t = blocksToText(m.content);
-			if (t.includes(COMPACTION_MARKER)) continue; // delivered as the summary part
+			if (t.includes(COMPACTION_MARKER) || isOmpCompactionSummary(t)) continue; // delivered as the summary part
 			if (!t.trim()) continue;
 			deltaParts.push(`[earlier user message]\n${t}`);
 		} else if (m.role === "toolResult") {
@@ -1488,7 +1492,11 @@ async function runTurnDriver(
 	// conversation: never reuse or mutate the live session's SessionStore
 	// binding, never claim dead/stranded tool results, and never arm
 	// background watchers for throwaway turns.
-	const ephemeral = options?.cacheRetention === "none" || options?.disableContinuation === true;
+	const ephemeral =
+		options?.cacheRetention === "none" ||
+		options?.disableContinuation === true ||
+		isOmpOneshotCall(context, options) ||
+		isSideTurnSession(options?.sessionId);
 	const existing = ephemeral ? null : store.get(key);
 	const compactionHandoff =
 		!ephemeral && !existing?.conversationId && Boolean(deps.pendingCompactionHandoff?.has(key));
