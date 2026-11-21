@@ -7,3 +7,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: add fork guidance and ignore rules (repo)
 - omp: package as omp-antigravity-bridge with a standalone test harness (packaging)
 - omp: hoist ACP activity helpers out of the switch and sort ACP cleanup listings for Bun (runtime) [upstreamable]
+- omp: detect the OMP host and load without generateDiffString or registerEntryRenderer (load)

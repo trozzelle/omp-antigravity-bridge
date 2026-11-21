@@ -26,7 +26,7 @@ describe("applyOverrides", () => {
 		expect(out.repository).toEqual({ type: "git", url: "git+https://github.com/trozzelle/omp-antigravity-bridge.git" });
 		expect(out.omp).toEqual({ extensions: ["./extensions/index.ts"] });
 		expect(out.pi).toEqual({ extensions: ["./extensions"] });
-		expect(out.dependencies).toEqual(upstream.dependencies);
+		expect(out.dependencies).toEqual({ ...upstream.dependencies, diff: "^8.0.4" });
 		expect(out.peerDependencies).toEqual(upstream.peerDependencies);
 		expect(out.files).toContain("CHANGELOG-OMP.md");
 		expect(out.keywords).toEqual(expect.arrayContaining(["pi-package", "agy", "omp", "oh-my-pi"]));
