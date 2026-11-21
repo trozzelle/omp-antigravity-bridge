@@ -12,3 +12,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: read OMP's system prompt, tools and developer-role messages (context)
 - omp: flush session bindings before shutdown (sessions) [upstreamable]
 - omp: keep OMP one-shot calls and side turns off the session's conversation and recognise OMP compaction summaries (compaction)
+- omp: share one bridge runtime across subagent sessions (runtime)

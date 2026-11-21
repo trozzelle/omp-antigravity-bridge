@@ -32,6 +32,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { GATED_AGY_TOOL_SET } from "./approval-hook.js";
 import { bridgeDir } from "./config.js";
+import { pidTag } from "./omp/runtime.js";
 
 /** Tools we do NOT expose to agy: it would just error (the provider is already
  *  antigravity, so the tool's own guard refuses; advertising it is noise). */
@@ -141,10 +142,11 @@ function clampProtocolVersionHeader(req: http.IncomingMessage): void {
 	}
 }
 
-/** Per-process config dir. Each pi session owns its own file, so concurrent
- *  sessions never race on or cross-route through one shared config. */
+/** Per-realm config dir (`pidTag()`: the pid, plus the thread id inside a
+ *  worker thread). Each pi session owns its own file, so concurrent sessions
+ *  never race on or cross-route through one shared config. */
 export function bridgeMcpConfigDir(): string {
-	return path.join(bridgeDir(), `agy-mcp-${process.pid}`);
+	return path.join(bridgeDir(), `agy-mcp-${pidTag()}`);
 }
 
 function bridgeMcpConfigPath(): string {
@@ -176,9 +178,10 @@ export function sweepStaleBridgeDirs(baseDir: string = bridgeDir(), alive: (pid:
 		return;
 	}
 	for (const name of entries) {
-		if (!name.startsWith("agy-mcp-")) continue;
-		const pid = Number(name.slice("agy-mcp-".length));
-		if (!Number.isInteger(pid) || pid === process.pid) continue;
+		const match = /^agy-mcp-(\d+)(?:-t\d+)?$/.exec(name);
+		if (!match) continue;
+		const pid = Number(match[1]);
+		if (pid === process.pid) continue;
 		if (alive(pid)) continue;
 		try {
 			fs.rmSync(path.join(baseDir, name), { recursive: true, force: true });

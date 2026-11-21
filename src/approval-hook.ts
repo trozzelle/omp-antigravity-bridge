@@ -29,6 +29,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { bridgeMcpConfigDir } from "./mcp-server.js";
+import { pidTag } from "./omp/runtime.js";
 
 export const HOOK_GROUP = "pi-bridge-gate";
 
@@ -39,9 +40,10 @@ export const HOOK_GROUP = "pi-bridge-gate";
  *  gate - audit 2026-09-07). */
 export const GATE_GROUP_PREFIX = "pi-bridge-gate";
 
-/** This session's group key. */
-export function gateGroupKey(pid: number = process.pid): string {
-	return `${GATE_GROUP_PREFIX}-${pid}`;
+/** This session's group key (`pidTag()`: the pid, plus the thread id inside
+ *  a worker thread). */
+export function gateGroupKey(tag: number | string = pidTag()): string {
+	return `${GATE_GROUP_PREFIX}-${tag}`;
 }
 
 /** True if the process is running (EPERM counts: alive but not ours). */
@@ -56,12 +58,12 @@ function pidAlive(pid: number): boolean {
 }
 
 /** Which session a gate group belongs to, parsed from the script path its
- *  command embeds (`.../approval-hook-<pid>.js`). The pid is the ownership
- *  proof: the script is per-pid (0600, written by that session). Returns
- *  null for groups we cannot attribute (foreign/future formats - never
- *  touched). */
+ *  command embeds (`.../approval-hook-<pid>.js`, or `-<pid>-t<thread>.js`
+ *  from a worker-thread realm). The pid is the ownership proof: the script
+ *  is per-pid (0600, written by that session). Returns null for groups we
+ *  cannot attribute (foreign/future formats - never touched). */
 function gateGroupPid(group: unknown): number | null {
-	const m = /approval-hook-(\d+)\.js/.exec(JSON.stringify(group));
+	const m = /approval-hook-(\d+)(?:-t\d+)?\.js/.exec(JSON.stringify(group));
 	return m ? Number(m[1]) : null;
 }
 

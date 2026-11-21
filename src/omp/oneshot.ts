@@ -51,3 +51,18 @@ export function ompHandoffBody(text: string): string | undefined {
 	if (open < 0 || close <= open) return undefined;
 	return text.slice(open + "\n<handoff>\n".length, close).trim();
 }
+
+/** Calls that run in a throwaway agy conversation and never bind the
+ *  session's: pi's compaction and branch summaries (`cacheRetention: "none"`),
+ *  cache warming (`disableContinuation`), OMP's one-shot calls and side turns. */
+export function isEphemeralCall(
+	context: TranscriptContext,
+	options: { cacheRetention?: string; disableContinuation?: boolean; sessionId?: string } | undefined,
+): boolean {
+	return (
+		options?.cacheRetention === "none" ||
+		options?.disableContinuation === true ||
+		isOmpOneshotCall(context, options) ||
+		isSideTurnSession(options?.sessionId)
+	);
+}

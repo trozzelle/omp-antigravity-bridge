@@ -61,6 +61,7 @@ import {
 import { detectPermissionGateExtensions, resolveGateMode } from "../src/approval-detect.js";
 import { hookScriptSource, removeGateHooks, stageGateHooks, sweepWorkspaceGateGroups } from "../src/approval-hook.js";
 import { StreamDriver } from "../src/driver.js";
+import { createOneshotProvider } from "../src/omp/oneshot-driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
 import { removeStagedAgyHome, stageAgyHome, sweepStagedAgyHomes, writeOwnBridgeEntry } from "../src/acp/home.js";
 import { cleanupManagedAcpInstall } from "../src/acp/setup.js";
@@ -122,7 +123,8 @@ import {
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
-import { initHost } from "../src/omp/host.js";
+import { initHost, isOmpHost } from "../src/omp/host.js";
+import { isWorkerRealm, sessionKindOf, type SessionKind } from "../src/omp/runtime.js";
 
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
@@ -487,7 +489,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			return;
 		}
 		pendingNativeTools = Math.max(0, pendingNativeTools - 1);
-		if (pendingNativeTools === 0) activeUi?.setStatus("agy-native", undefined);
+		if (pendingNativeTools === 0) setDimStatus("agy-native", undefined);
 		// Bound persisted session size; the ACP result and diff may be megabytes.
 		pi.appendEntry<NativeDisplayEvent>("agy-native-event", {
 			...event,
@@ -695,11 +697,22 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// Same condition listTools uses to offer activate_skill.
 		skillsToolOffered: () => bridgeSkillCount > 0 && loadConfig().bridgeTools !== "none",
 	});
+	// OMP one-shot calls and /btw side turns get their own agy process
+	// (src/omp/oneshot-driver.ts): on this session's stream-json driver they
+	// waited for its open turn and restarted its warm agy. Isolated home only:
+	// on the global config a throwaway agy would see other sessions' bridges.
+	const oneshots =
+		isOmpHost() && engine === "stream-json" && streamHome.isolated
+			? createOneshotProvider({ entries, store, log: fileLog.log.bind(fileLog), driverLog: streamDriver.log })
+			: undefined;
 
-	const joinRealm = () =>
+	const joinRealm = (kind: SessionKind) =>
 		realm.join({
+			// pi keeps upstream's routing: no kind, ambiguous calls are refused.
+			kind: isOmpHost() ? kind : undefined,
 			sessionId: () => liveSessionId(currentSessionManager),
 			streamSimple,
+			oneshot: oneshots?.streamSimple,
 			hasActiveTurn: () => (engine === "acp" ? acpDriver.activeHandle !== null : streamDriver.activeHandle !== null),
 			conversationId: () =>
 				(engine === "acp" ? acpDriver.snapshot().conversationId : streamDriver.snapshot().conversationId)
@@ -832,8 +845,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
 	// privileged API. Started on session_start, torn down on session_shutdown.
 	pi.on("session_start", async (event, ctx) => {
+		// OMP subagents fire session_start too: everything process-wide below
+		// (setup offers, legacy cleanups and notices, sweeps) runs for the main
+		// session only. pi has no ctx.agent, which counts as main.
+		const mainSession = sessionKindOf(ctx) === "main";
 		currentSessionManager = ctx.sessionManager;
-		realmSession ??= joinRealm();
+		realmSession ??= joinRealm(mainSession ? "main" : "sub");
 		if (ctx.hasUI) activeUi = ctx.ui;
 		// First-run engine picker: ask once, on the first interactive start,
 		// which turn engine to use. Skipped headless (ctx.mode !== "tui"),
@@ -845,7 +862,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// bridge startup below: on a genuine first run the modal blocks input
 		// anyway, so the delay is invisible.
 		let setupEngine = engine;
-		if (event.reason === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(configPath())) {
+		if (mainSession && event.reason === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(configPath())) {
 			// Best-effort, like the legacy-patch notice below: a picker failure
 			// (mid-prompt TUI teardown, resize races) must never take down the
 			// rest of session_start - the MCP bridge startup included. The
@@ -866,7 +883,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// lives outside our reach, so it is the only case that still warns.
 		// Independent once-flags: a failed cleanup must never suppress the
 		// env-var warning (or vice versa) for the rest of the process.
-		if (!legacyConfigCleanupRan) {
+		if (mainSession && !legacyConfigCleanupRan) {
 			legacyConfigCleanupRan = true;
 			try {
 				removeLegacyAcpBin();
@@ -875,7 +892,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				fileLog.log("legacy-acp-config-cleanup", { error: String(err) }, "error");
 			}
 		}
-		if (!legacyEnvAcpWarningShown && process.env.AGY_ACP_BIN?.trim()) {
+		if (mainSession && !legacyEnvAcpWarningShown && process.env.AGY_ACP_BIN?.trim()) {
 			legacyEnvAcpWarningShown = true;
 			const msg = "AGY_ACP_BIN is set but no longer used; turns run \"agy acp\" from the CLI. Remove it from your shell config, then start a new terminal.";
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
@@ -895,7 +912,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 			else console.error(`[antigravity-bridge] ${msg}`);
 		}
-		if (!managedAcpCleanupRan) {
+		if (mainSession && !managedAcpCleanupRan) {
 			managedAcpCleanupRan = true;
 			try {
 				const cleanup = cleanupManagedAcpInstall();
@@ -904,12 +921,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				fileLog.log("legacy-acp-cleanup", { error: String(err) }, "warn");
 			}
 		}
-		void checkAgySetup(ctx, setupEngine);
+		if (mainSession) void checkAgySetup(ctx, setupEngine);
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
 		// and offer /agy patch-cleanup. Never auto-edits the install.
 		try {
-			if (!loadConfig().patchCleanupNotified && patchStatus().present) {
+			if (mainSession && !loadConfig().patchCleanupNotified && patchStatus().present) {
 				// Flag after surfacing, not before: headless sessions log to
 				// stderr (ctx.ui.notify is a no-op without a UI), so the notice
 				// is never silently dropped.
@@ -966,14 +983,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			else console.error(msg);
 		};
 		// Sweep crashed sessions even when the bridge is disabled.
-		sweepStaleBridgeServers();
-		sweepStaleBridgeDirs();
-		sweepStagedAgyHomes();
+		if (mainSession) {
+			sweepStaleBridgeServers();
+			sweepStaleBridgeDirs();
+			sweepStagedAgyHomes();
+		}
 		// Start the bridge unless the user turned it off. No patch gate, no
 		// consent flow: calls route through pi's normal toolUse loop.
 		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
 		if (bridgeMode === "none") return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
+		// OMP runs a worker-thread session's provider calls on the main thread,
+		// so a listener started in this realm would never be called.
+		if (isOmpHost() && isWorkerRealm()) return;
 		// pi loads project skill locations only after the project is trusted;
 		// mirror that gate. Global skill dirs are always scanned.
 		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {});
@@ -1117,7 +1139,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					fileLog.log("stream-home-entry-failed", { error: String(err) }, "warn");
 				}
 			}
-			if (streamHome.fallbackReason) {
+			if (streamHome.fallbackReason && mainSession) {
 				// Isolation degraded to the legacy global path: say so once.
 				const msg = `[antigravity-bridge] ${streamHome.fallbackReason}; using the global MCP registration (issue #14 isolation unavailable).`;
 				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
@@ -1141,7 +1163,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 						fileLog.log("approval-gate-agy-version-unverified", { version: cli.raw }, "warn");
 					}
 				}
-				if (mode === "dedicated") {
+				if (r.first && mode === "dedicated") {
 					// The explicit antigravity_approve variant is planned; until it
 					// ships, dedicated stages the same shadow tools. Say so, so the
 					// config value never lies silently.
@@ -1259,6 +1281,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			await acpDriver.close("recycle", "session shutdown");
 			roundTrips.failAll(FAIL_REASON_SHUTDOWN);
 			await h?.close();
+			await oneshots?.close();
 			hiddenBridgeTools.clear();
 		} finally {
 			// Leaving the realm revokes this session's route; only the last session

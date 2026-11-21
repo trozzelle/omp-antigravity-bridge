@@ -47,7 +47,7 @@ import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput
 import { stageSyspromptAgent } from "./sysprompt-agent.js";
 import { buildImageNote, stagePromptImages } from "./prompt-images.js";
 import { contextSystemPrompt, contextTools, isUserLikeRole } from "./omp/context.js";
-import { isOmpCompactionSummary, isOmpOneshotCall, isSideTurnSession, ompHandoffBody } from "./omp/oneshot.js";
+import { isEphemeralCall, isOmpCompactionSummary, ompHandoffBody } from "./omp/oneshot.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -1556,11 +1556,7 @@ async function runTurnDriver(
 	// conversation: never reuse or mutate the live session's SessionStore
 	// binding, never claim dead/stranded tool results, and never arm
 	// background watchers for throwaway turns.
-	const ephemeral =
-		options?.cacheRetention === "none" ||
-		options?.disableContinuation === true ||
-		isOmpOneshotCall(context, options) ||
-		isSideTurnSession(options?.sessionId);
+	const ephemeral = isEphemeralCall(context, options);
 	const existing = ephemeral ? null : store.get(key);
 	const compactionHandoff =
 		!ephemeral && !existing?.conversationId && Boolean(deps.pendingCompactionHandoff?.has(key));

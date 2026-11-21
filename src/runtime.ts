@@ -30,13 +30,16 @@ import { logsDir } from "./config.js";
 import { unregisterBridgeServer } from "./mcp-registration.js";
 import { startMcpServer, type McpBridgeDeps, type McpServerHandle, type McpStartResult } from "./mcp-server.js";
 import { SessionStore } from "./sessions.js";
+import { isEphemeralCall } from "./omp/oneshot.js";
+import { pidTag, type SessionKind } from "./omp/runtime.js";
 
 const REALM_KEY = Symbol.for("pi-antigravity-bridge.runtime");
 const REALM_BRAND = Symbol.for("pi-antigravity-bridge.realm.brand");
 
-/** The approval hook script of this realm (one per process, realmToken embedded). */
+/** The approval hook script of this realm (one per realm, realmToken embedded;
+ *  OMP: `pidTag()` adds the thread id inside a worker-thread realm). */
 export function approvalHookScriptPath(): string {
-	return path.join(logsDir(), `approval-hook-${process.pid}.js`);
+	return path.join(logsDir(), `approval-hook-${pidTag()}.js`);
 }
 
 /** Read the session manager's current session id live (changes across /new and /resume). */
@@ -61,8 +64,15 @@ export type BridgeStreamSimple = (
 ) => AssistantMessageEventStream;
 
 export interface SessionPort {
+	/** OMP: `ctx.agent.kind`. Calls whose session id matches no member ride
+	 *  the main session (OMP advisors, worker-thread subagents, pre-spawn
+	 *  judgments). Absent under pi. */
+	kind?: SessionKind;
 	sessionId(): string | undefined;
 	streamSimple: BridgeStreamSimple;
+	/** OMP: the session's provider for one-shot calls and side turns
+	 *  (src/omp/oneshot-driver.ts), when it has one; else streamSimple. */
+	oneshot?: BridgeStreamSimple;
 	hasActiveTurn(): boolean;
 	conversationId(): string | undefined;
 }
@@ -118,7 +128,8 @@ class Realm implements BridgeRealm {
 	readonly streamSimple: BridgeStreamSimple = (model, context, options) => {
 		const member = this.#memberFor(options?.sessionId);
 		if (!member) return refusedStream(model, "Antigravity bridge: no live session in this process");
-		return member.port.streamSimple(model, context, options);
+		const { oneshot } = member.port;
+		return (oneshot && isEphemeralCall(context, options) ? oneshot : member.port.streamSimple)(model, context, options);
 	};
 
 	join(port: SessionPort): RealmSession {
@@ -154,6 +165,8 @@ class Realm implements BridgeRealm {
 				if (id !== undefined && sessionId.startsWith(`${id}:`)) return members[i];
 			}
 		}
+		const main = members.find((m) => m.port.kind === "main");
+		if (main) return main;
 		return members.length === 1 ? members[0] : undefined;
 	}
 
