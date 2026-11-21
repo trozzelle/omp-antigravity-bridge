@@ -258,6 +258,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Approval-gate hook script (per-pid, token embedded). Written at session
 	// start when the gate is active; removed at session_shutdown.
 	let gateScriptPath: string | null = null;
+	// True once session_start staged the approval gate hooks for agy; the ACP
+	// driver then stops letting skipPermissions auto-allow agy's own
+	// request_permission (the hook does not stop that second path).
+	let gateActive = false;
 	let managedAcpCleanupRan = false;
 	let legacyConfigCleanupRan = false;
 	let legacyConfigCleanupFailed = false;
@@ -376,13 +380,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		usageEstimate: () => loadConfig().acp.usageEstimate,
 		sessionOpTimeoutMs: () => loadConfig().acp.sessionTimeoutMs,
 		sessionRetryOnTimeout: () => loadConfig().acp.sessionRetryOnTimeout,
-		// ACP request_permission parity with the approval gate: skipPermissions
-		// turns auto-allow in the driver; approvals.mode allow short-circuits
-		// to the same synchronous allow; everything else opens a dialog (esc
-		// and headless deny fail-closed) under the shared dialog lock.
+		// ACP request_permission parity with the approval gate: with the gate
+		// off, skipPermissions turns auto-allow in the driver. With the gate
+		// staged (gateActive) skipPermissions never applies, because the hook
+		// does not stop agy's own permission path: approvals.mode allow
+		// answers allow, deny answers deny, everything else opens a dialog
+		// (esc and headless deny fail-closed) under the shared dialog lock.
 		// Under OMP, approvals.mode inherit follows OMP's approval settings:
 		// auto exactly when OMP would not gate (yolo, no restrictive policy).
 		permissionPolicy: () => acpPermissionPolicy(loadConfig().approvals.mode, () => readOmpApprovalSettings(pi)),
+		gateActive: () => gateActive,
 		onPermissionRequest: async (req) => {
 			const ui = activeUi;
 			if (loadConfig().approvals.mode === "deny" || !ui) return undefined;
@@ -1139,6 +1146,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				const cfg = loadConfig();
 				if (isOmpHost()) fileLog.log("omp-approval-settings", readOmpApprovalSettings(pi) ?? { unavailable: true }, "info");
 				const mode = effectiveGateMode(pi, cfg.approvals.gateMode);
+				gateActive = mode !== "off";
 				if (r.first && mode !== "off" && engine === "acp") {
 					// Staged-home hook delivery is probe-verified on agy 1.5.12
 					// only (issue #18); older ACP builds may not honor it. Warn
