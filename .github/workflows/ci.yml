@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # sync-upstream.yml dispatches this workflow on each sync/<sha> branch:
+  # pushes made with GITHUB_TOKEN trigger no push/pull_request runs, but
+  # workflow_dispatch runs do, and their check runs attach to the branch head
+  # commit that promote-sync.yml verifies.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tested OMP release, bumped deliberately (README states it too).
+  OMP_VERSION: "19.1.0"
+  # omp 19.1.0 requires Bun >= 1.4.4.
+  BUN_VERSION: "1.4.5"
+  NODE_VERSION: "22"
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test (Node)
+        run: npm test
+
+      - name: Test (Bun)
+        run: npm run test:bun
+
+      - name: Install omp ${{ env.OMP_VERSION }}
+        run: |
+          bun install -g "@oh-my-pi/pi-coding-agent@${OMP_VERSION}"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: Load smoke (omp)
+        run: npm run smoke:omp

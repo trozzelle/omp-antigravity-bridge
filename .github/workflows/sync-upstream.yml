@@ -1,0 +1,183 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild sync/<sha> even if that branch already exists
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write # dispatch ci.yml on the sync branch
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0 # the rebase and the split comparison need full history
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Configure git identity for the rebase
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync with upstream
+        id: sync
+        env:
+          FORCE: ${{ inputs.force && '1' || '' }}
+          SYNC_OUT_DIR: ${{ runner.temp }}/omp-sync
+        run: |
+          set +e
+          bash scripts/omp/sync-upstream.sh
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then
+            exit "$code"
+          fi
+
+      - name: Open or update the conflict issue
+        if: steps.sync.outputs.status == 'conflict'
+        env:
+          SHA: ${{ steps.sync.outputs.sha }}
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+          FAILING: ${{ steps.sync.outputs.failing_commit }}
+          FILES: ${{ steps.sync.outputs.conflict_files }}
+        run: |
+          title="Upstream sync conflict at ${SHA}"
+          body="$RUNNER_TEMP/issue.md"
+          {
+            echo "Rebasing \`main\` onto upstream \`${UPSTREAM_SHA}\` stopped on a patch commit."
+            echo
+            echo "- Failing patch commit: \`${FAILING}\`"
+            echo "- Conflicted files: \`${FILES}\`"
+            echo "- Run: ${RUN_URL}"
+            echo
+            echo "Resolve locally:"
+            echo
+            echo '```bash'
+            echo "git fetch origin && git switch main && git reset --hard origin/main"
+            echo "git branch -f upstream origin/upstream"
+            echo "bash scripts/omp/sync-upstream.sh   # reproduces the conflict and fast-forwards upstream"
+            echo "git switch -c sync/${SHA} main && git rebase upstream"
+            echo "# fix the patch commit, git rebase --continue, then run the checks and:"
+            echo "git push origin upstream sync/${SHA}"
+            echo '```'
+            echo
+            echo "Then run the **Sync upstream** workflow (or wait for the next scheduled run). It finds the pushed"
+            echo "\`sync/${SHA}\`, opens its pull request with the \`omp-sync main-base\` marker set to the current"
+            echo "\`origin/main\`, dispatches CI on it and closes this issue. Promotion only works while \`main\` still"
+            echo "equals that marker; if \`main\` moves first, repeat these steps from a fresh \`origin/main\`."
+          } >"$body"
+          existing="$(gh issue list --state open --limit 100 --json number,title \
+            --jq '.[] | select(.title | startswith("Upstream sync conflict at ")) | .number' | head -n 1)"
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body-file "$body"
+            gh issue comment "$existing" --body "Still conflicting at upstream ${SHA}: ${RUN_URL}"
+          else
+            gh issue create --title "$title" --body-file "$body"
+          fi
+          echo "::error::Upstream sync conflict at ${SHA}: ${FAILING}"
+          exit 1
+
+      - name: Push upstream and the sync branch
+        if: steps.sync.outputs.status == 'synced'
+        env:
+          BRANCH: ${{ steps.sync.outputs.branch }}
+        run: |
+          git push origin upstream
+          git push --force origin "${BRANCH}"
+
+      # "pending" means origin/sync/<sha> already exists (for example a conflict resolved by hand and
+      # pushed). It gets the same pull request, main-base marker (current origin/main) and CI dispatch
+      # as a freshly built branch, unless a pull request is already open for it.
+      - name: Open or update the sync pull request
+        id: pr
+        if: steps.sync.outputs.status == 'synced' || steps.sync.outputs.status == 'pending'
+        env:
+          STATUS: ${{ steps.sync.outputs.status }}
+          BRANCH: ${{ steps.sync.outputs.branch }}
+          SHA: ${{ steps.sync.outputs.sha }}
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+          VERSION: ${{ steps.sync.outputs.upstream_version }}
+          BASE_VERSION: ${{ steps.sync.outputs.base_version }}
+          MAIN_SHA: ${{ steps.sync.outputs.main_sha }}
+          SYNC_OUT_DIR: ${{ runner.temp }}/omp-sync
+        run: |
+          title="sync: upstream ${VERSION} (${SHA})"
+          body="$RUNNER_TEMP/pr.md"
+          {
+            echo "<!-- omp-sync main-base=${MAIN_SHA} upstream=${UPSTREAM_SHA} -->"
+            echo "Upstream \`${UPSTREAM_SHA}\` (${BASE_VERSION} → ${VERSION}) with the OMP patch stack rebased on top."
+            echo
+            echo "Patch commits:"
+            echo
+            git log --reverse --format="- \`%h\` %s" "upstream..origin/${BRANCH}"
+            echo
+            echo "Checks: the CI workflow runs on this branch (see the checks below)."
+            echo "Before promoting, run \`bash scripts/omp/smoke-live.sh\` locally on this branch."
+            echo "Promote with the **Promote sync** workflow (input: \`${BRANCH}\`); do not merge this PR."
+            echo
+            echo "## Upstream changelog"
+            echo
+            if [ -s "${SYNC_OUT_DIR}/changelog-delta.md" ]; then
+              cat "${SYNC_OUT_DIR}/changelog-delta.md"
+            else
+              echo "_No new upstream changelog sections._"
+            fi
+          } >"$body"
+          # GitHub caps PR bodies at 65536 characters.
+          if [ "$(wc -c <"$body")" -gt 60000 ]; then
+            head -c 60000 "$body" >"$body.cut"
+            printf '\n\n_Changelog truncated; see upstream CHANGELOG.md._\n' >>"$body.cut"
+            mv "$body.cut" "$body"
+          fi
+          existing="$(gh pr list --head "${BRANCH}" --state open --json number --jq '.[0].number // empty')"
+          if [ -z "$existing" ]; then
+            gh pr create --base main --head "${BRANCH}" --title "$title" --body-file "$body"
+            echo "run_ci=true" >>"$GITHUB_OUTPUT"
+          elif [ "$STATUS" = "synced" ]; then
+            gh pr edit "$existing" --title "$title" --body-file "$body"
+            echo "run_ci=true" >>"$GITHUB_OUTPUT"
+          else
+            # Pending with an open PR: its marker and checks belong to that PR; leave it alone.
+            echo "Pull request #${existing} already tracks ${BRANCH}"
+            echo "run_ci=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Run CI on the sync branch
+        if: steps.pr.outputs.run_ci == 'true'
+        env:
+          BRANCH: ${{ steps.sync.outputs.branch }}
+        run: gh workflow run ci.yml --ref "${BRANCH}"
+
+      - name: Close a stale conflict issue
+        if: steps.sync.outputs.status == 'synced' || steps.sync.outputs.status == 'pending' || steps.sync.outputs.status == 'up-to-date'
+        env:
+          SHA: ${{ steps.sync.outputs.sha }}
+        run: |
+          gh issue list --state open --limit 100 --json number,title \
+            --jq '.[] | select(.title | startswith("Upstream sync conflict at ")) | .number' |
+            while read -r n; do
+              gh issue close "$n" --comment "Resolved: upstream ${SHA} now rebases cleanly (${RUN_URL})."
+            done
