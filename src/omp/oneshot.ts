@@ -9,16 +9,8 @@
 // which the digest must recognise to isolate and dedupe the summary.
 
 import type { TranscriptContext } from "@earendil-works/pi-ai";
-import { contextTools } from "./context.js";
+import { contextTools, isOmpCompactionSummary } from "./context.js";
 import { isOmpHost } from "./host.js";
-
-/** Leading lines of OMP's compaction and handoff summary messages. Branch
- *  summaries ("Branch-return summary:") are deliberately absent: they are
- *  not compactions. */
-export const OMP_COMPACTION_PREFIXES: readonly string[] = [
-	"Prior model work/tool state available.",
-	"Context replaced. The <handoff>",
-];
 
 /** An OMP call outside the agent loop: no tools and no `getToolContext`
  *  option (the agent loop always passes one). */
@@ -32,13 +24,6 @@ export function isOmpOneshotCall(context: TranscriptContext, options: unknown): 
 /** OMP `/btw` side turn: session id `<id>:side:<hex>`. */
 export function isSideTurnSession(sessionId: string | undefined): boolean {
 	return isOmpHost() && typeof sessionId === "string" && sessionId.includes(":side:");
-}
-
-/** True for the text of an OMP compaction or handoff summary message. */
-export function isOmpCompactionSummary(text: string): boolean {
-	if (!isOmpHost()) return false;
-	const head = text.trimStart();
-	return OMP_COMPACTION_PREFIXES.some((prefix) => head.startsWith(prefix));
 }
 
 /** Body of an OMP handoff summary (between the `<handoff>` lines), or

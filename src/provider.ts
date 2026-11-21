@@ -46,10 +46,18 @@ import path from "node:path";
 import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput } from "./diff-render.js";
 import { stageSyspromptAgent } from "./sysprompt-agent.js";
 import { buildImageNote, stagePromptImages } from "./prompt-images.js";
-import { contextSystemPrompt, contextTools, isUserLikeRole, ompUserImages, ompUserPrompt } from "./omp/context.js";
+import {
+	contextSystemPrompt,
+	contextTools,
+	isOmpCompactionSummary,
+	isUserLikeRole,
+	ompUserImages,
+	ompUserPrompt,
+	trailingUserLikeStart,
+} from "./omp/context.js";
 import { ompApprovalToolCall } from "./omp/approval-tool.js";
 import { isOmpHost } from "./omp/host.js";
-import { isEphemeralCall, isOmpCompactionSummary, ompHandoffBody } from "./omp/oneshot.js";
+import { isEphemeralCall, ompHandoffBody } from "./omp/oneshot.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -378,7 +386,12 @@ export function buildContextDigest(
 	} else if (watermark > messages.length) {
 		start = 0;
 	}
-	const end = opts.includeLast ? messages.length : Math.max(0, messages.length - 1);
+	// Under OMP the prompt carries the whole trailing user/developer run
+	// (ompUserPrompt), so the delta stops where that run starts: otherwise the
+	// user's message ships twice, once as an earlier message and once as the prompt.
+	const end = opts.includeLast
+		? messages.length
+		: Math.max(0, Math.min(messages.length - 1, isOmpHost() ? trailingUserLikeStart(messages) : messages.length));
 	for (let i = start; i < end; i++) {
 		const m = messages[i];
 		if (m.role === "assistant") {
