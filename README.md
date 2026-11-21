@@ -1,3 +1,5 @@
+> **omp-antigravity-bridge** is a port of this extension to [OMP (oh-my-pi)](https://github.com/can1357/oh-my-pi). It tracks upstream [`@estebanforge/pi-antigravity-bridge`](https://github.com/EstebanForge/pi-extensions/tree/main/packages/pi-antigravity-bridge) and carries a small set of compatibility patches. Install and OMP-specific behaviour: [docs/OMP.md](docs/OMP.md). Everything below is upstream's documentation and applies unless docs/OMP.md says otherwise.
+
 # pi-antigravity-bridge
 
 A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi), built on the official `agy` CLI: **`agy acp`** by default, with the stream-json CLI engine kept as the fallback. It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
