@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { normalizeAgyAgentName } from "./agents.js";
+import { isOmpHost } from "./omp/host.js";
 
 /** pi's agent dir (env override PI_CODING_AGENT_DIR, else ~/.pi/agent); every
  *  bridge-owned path derives from it so isolated or rebranded pi homes keep
@@ -71,9 +72,17 @@ export type UsageEstimate = "estimate" | "direct" | "off";
 export type GateMode = "auto" | "shadow" | "dedicated" | "off";
 
 /** Fallback decision when no extension blocked a gated call: "ask" uses
- *  ctx.ui.confirm (headless = deny, fail-closed), "allow" auto-approves,
- *  "deny" auto-rejects. */
-export type GateAskMode = "ask" | "allow" | "deny";
+ *  ctx.ui.confirm on pi and forces an OMP approval prompt on OMP (headless
+ *  = deny, fail-closed), "allow" auto-approves, "deny" auto-rejects.
+ *  "inherit" (OMP default): no bridge policy, OMP's tools.approvalMode /
+ *  tools.approval decide. Under pi "inherit" reads as "ask". */
+export type GateAskMode = "ask" | "allow" | "deny" | "inherit";
+
+/** Default approvals.mode: OMP defers to its own approval mode; pi keeps
+ *  the bridge confirm. */
+export function defaultGateAskMode(): GateAskMode {
+	return isOmpHost() ? "inherit" : "ask";
+}
 
 export interface GateConfig {
 	gateMode: GateMode;
@@ -400,11 +409,12 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 		gateRaw === "shadow" || gateRaw === "dedicated" || gateRaw === "off"
 			? gateRaw
 			: "auto";
-	const askRaw = (process.env.AGY_APPROVALS_MODE ?? file.approvals?.mode ?? DEFAULTS.approvals.mode).toLowerCase();
+	// Unknown values (and "inherit" under pi) fall back to the host default.
+	const askRaw = (process.env.AGY_APPROVALS_MODE ?? file.approvals?.mode ?? defaultGateAskMode()).toLowerCase();
 	const gateAskMode: GateAskMode =
-		askRaw === "allow" || askRaw === "deny"
+		askRaw === "allow" || askRaw === "deny" || askRaw === "ask"
 			? askRaw
-			: "ask";
+			: defaultGateAskMode();
 
 	const fileAcp = (typeof file.acp === "object" && file.acp !== null ? file.acp : {}) as Partial<AcpConfig>;
 	// Unknown values fall back to "estimate" (same narrow-parse pattern as
@@ -511,9 +521,13 @@ export function saveConfig(patch: ConfigPatch, configFile: string = configPath()
 	const next: AgyConfig = {
 		...DEFAULTS,
 		...file,
-		...(file.approvals !== undefined
-			? { approvals: { gateMode: fileApprovals.gateMode ?? DEFAULTS.approvals.gateMode, mode: fileApprovals.mode ?? DEFAULTS.approvals.mode } }
-			: {}),
+		// Always normalized: the bare DEFAULTS spread would otherwise persist
+		// mode "ask" under OMP on any unrelated save, overriding inherit.
+		// Under pi this writes exactly what the DEFAULTS spread wrote.
+		approvals: {
+			gateMode: fileApprovals.gateMode ?? DEFAULTS.approvals.gateMode,
+			mode: fileApprovals.mode ?? defaultGateAskMode(),
+		},
 		...restPatch,
 		acp: mergedAcp,
 		engine: narrowEngine(String(persistedEngine).toLowerCase()),

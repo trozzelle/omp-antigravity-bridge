@@ -1,6 +1,7 @@
 import type { BridgeTools } from "./config.js";
 import { POLL_TOOL_NAME } from "./provider.js";
 import { ACTIVATE_SKILL_TOOL_NAME } from "./skills.js";
+import { OMP_APPROVAL_TOOL_NAME } from "./omp/approval-tool.js";
 import { isOmpHarnessTool, isOmpMcpTool } from "./omp/tool-catalog.js";
 import { toPlainJsonSchema } from "./omp/tool-schema.js";
 
@@ -30,6 +31,8 @@ const BRIDGE_INTERNAL_TOOLS = new Set([
 	ACTIVATE_SKILL_TOOL_NAME,
 	TOOL_INFO_TOOL_NAME,
 	CALL_TOOL_NAME,
+	// OMP approval round-trip tool: provider-emitted only, never agy-callable.
+	OMP_APPROVAL_TOOL_NAME,
 ]);
 
 const DEFAULT_INPUT_SCHEMA: object = { type: "object", properties: {}, additionalProperties: true };

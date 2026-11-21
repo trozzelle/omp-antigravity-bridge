@@ -17,3 +17,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: re-execute agy `read_file` steps as native reads (re-exec) [upstreamable]
 - omp: re-execute agy read steps on OMP `read` selectors, `list_dir` on `read`, `find_by_name` on `glob`, without the pi-only reasoning argument (re-exec)
 - omp: draw native-event and poll-run cards as display-only messages (cards)
+- omp: dedicated approval tool deferring to the host approval mode; approvals.mode inherit; gate auto and ACP permission policy follow host approval settings (approval)
