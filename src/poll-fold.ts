@@ -53,3 +53,44 @@ export class PollRunFolder {
 		return run;
 	}
 }
+
+/** The slice of a bridge_poll_result NativeDisplayEvent the fold needs. */
+export interface PollEventInput {
+	status: "started" | "completed" | "failed";
+	/** Bridge callId from the poll's args; absent on some failed events. */
+	callId?: string;
+}
+
+/** The escalation registry's view of the polled call. */
+export interface PollEventView {
+	name: string;
+	state: PollRunData["state"];
+}
+
+export interface PollEventResult {
+	/** A run closed because this poll switched targets; persist it. */
+	switched?: PollRunData;
+	/** What the live status line shows after this event; absent when idle. */
+	live?: { target: string; count: number };
+}
+
+const UNKNOWN_TARGET = "unknown call";
+
+/** Fold one bridge_poll_result event.
+ *
+ *  The ACP driver reports every tool step twice: `started`, then `completed`
+ *  or `failed`. A poll counts once, on the settling event; `started` only
+ *  previews the in-flight poll for the status line. A `failed` event can
+ *  arrive without a callId, so it joins the open run rather than splitting
+ *  off an "unknown call" run of its own. */
+export function foldPollEvent(folder: PollRunFolder, event: PollEventInput, view: PollEventView | undefined, at: Date): PollEventResult {
+	const target = view?.name ?? (event.callId ? UNKNOWN_TARGET : (folder.open?.target ?? UNKNOWN_TARGET));
+	if (event.status === "started") {
+		const open = folder.open;
+		return { live: { target, count: (open?.target === target ? open.count : 0) + 1 } };
+	}
+	const state = event.status === "failed" ? "failed" : (view?.state ?? "running");
+	const switched = folder.add(target, state, at);
+	const open = folder.open;
+	return { ...(switched ? { switched } : {}), live: open ? { target: open.target, count: open.count } : undefined };
+}

@@ -1472,7 +1472,7 @@ export function consumeActivity(
 		case "tool_error":
 			if (feats.engine === "acp" && feats.onNativeEvent) {
 				try {
-					feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "failed", output: activity.message });
+					feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "failed", output: activity.message, callId: activity.args ? callIdArg(activity.args) : undefined });
 					return "continue";
 				} catch { /* Fall back to a thinking label. */ }
 			}
