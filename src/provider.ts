@@ -1839,6 +1839,14 @@ async function runTurnDriver(
 			// pass must find them undelivered (tombstone-borne items have no
 			// callId and stay consumed, as before).
 			for (const l of late) if (l.callId) deps.roundTrips.unclaim(l.callId);
+			// A signal aborted before (or while) the driver started is a
+			// deliberate abort: OMP aborts auxiliary calls routinely, and those
+			// must stay off the error log and out of the toasts.
+			if (options?.signal?.aborted) {
+				deps.log?.("turn-error", { reason: "aborted-before-start", error: msg }, "debug");
+				finalize(stream, blocks, "aborted", "Operation aborted");
+				return;
+			}
 			deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
 			finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
 			return;
