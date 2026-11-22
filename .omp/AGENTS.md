@@ -9,7 +9,7 @@ This file lives in `.omp/` on purpose: upstream ships its own root `AGENTS.md` a
 ## Branches and upstream sync
 
 - `upstream`: output of `git subtree split --prefix=packages/pi-antigravity-bridge` over upstream `main`. Never edit, commit to, or rebase it by hand; only the sync flow fast-forwards it.
-- `main`: `upstream` plus the OMP patch stack. Each sync rebases `main` onto the new `upstream` and force-pushes it. Releases are tagged `v<upstream-version>-omp.<N>` and stay reachable.
+- `main`: `upstream` plus the OMP patch stack. Each sync rebases `main` onto the new `upstream` and force-pushes it. Releases are tagged `v<upstream-version>-omp.<N>` and stay reachable; the annotated `latest` tag is force-moved to the newest release (by `promote-sync.yml`, together with a GitHub release marked latest). Never point `latest` at anything but a release tag's commit.
 - `sync/<upstream-short-sha>`: candidate branches produced by the sync workflow. Promotion to `main` is a separate, deliberate step.
 - To change behaviour, amend or add a commit in the patch stack. Never rewrite upstream commits.
 

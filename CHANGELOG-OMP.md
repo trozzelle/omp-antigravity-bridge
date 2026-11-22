@@ -34,3 +34,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: resolve /agy tasks and /agy artifacts from the session's bound conversation, not the ACP driver's last settled session that auxiliary calls overwrite (commands)
 - omp: make `/agy tasks tail <id>` reachable: the tasks branch no longer treats its own subcommand word as the first argument (commands) [upstreamable]
 - omp: track agy 1.5.14 subagent spawns (`step_type: subagent`) on stream-json so `/agy subagents` lists them like on ACP (stream-json) [upstreamable]
+- omp: maintain a moving `latest` release tag and publish a GitHub release on promotion (release)
