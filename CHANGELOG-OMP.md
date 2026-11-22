@@ -36,3 +36,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: track agy 1.5.14 subagent spawns (`step_type: subagent`) on stream-json so `/agy subagents` lists them like on ACP (stream-json) [upstreamable]
 - omp: maintain a moving `latest` release tag and publish a GitHub release on promotion (release)
 - omp: publish an OMP marketplace catalog and a self-contained bundle with each release, so `omp plugin upgrade` picks up new releases (release)
+- omp: point installs at the trozzelle/omp-plugins marketplace (docs)
