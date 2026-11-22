@@ -16,7 +16,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { parseAgyLine } from "./stream-events.js";
+import { parseAgyLine, subagentStepArgs } from "./stream-events.js";
 import { isKnownNoiseLine, MAX_FRAME_BYTES, stripGluedNoise } from "./frame-guard.js";
 import { bridgeMcpConfigDir, bridgeMcpConfigExists } from "./mcp-server.js";
 import { gateHooksStaged } from "./approval-hook.js";
@@ -628,11 +628,16 @@ export class StreamDriver implements TurnDriver {
 					}
 					break;
 				}
-				if (s.step_type === "tool") {
+				// agy 1.5.14 reports subagent spawns as step_type "subagent"
+				// (tool_name invoke_subagent, subagent_info) rather than "tool";
+				// both become the same tool activity the roster folds.
+				if (s.step_type === "tool" || s.step_type === "subagent") {
 					turn.sawModelStep = true;
-					const name = s.tool_name ?? s.tool_info?.name ?? "tool";
-					const args =
-						s.tool_info?.parameters && typeof s.tool_info.parameters === "object"
+					const isSubagent = s.step_type === "subagent";
+					const name = s.tool_name ?? s.tool_info?.name ?? (isSubagent ? "invoke_subagent" : "tool");
+					const args = isSubagent
+						? subagentStepArgs(s)
+						: s.tool_info?.parameters && typeof s.tool_info.parameters === "object"
 							? (s.tool_info.parameters as Record<string, unknown>)
 							: {};
 					if (s.state === "ACTIVE") {

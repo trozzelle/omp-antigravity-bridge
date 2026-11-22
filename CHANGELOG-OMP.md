@@ -33,3 +33,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: verify each web run on its own tool's step: `agy_read_url` answered only by `search_web` (agy 1.5.14 never offers `read_url_content` headlessly) is refused as unverified instead of returned as a page read (web-tools) [upstreamable]
 - omp: resolve /agy tasks and /agy artifacts from the session's bound conversation, not the ACP driver's last settled session that auxiliary calls overwrite (commands)
 - omp: make `/agy tasks tail <id>` reachable: the tasks branch no longer treats its own subcommand word as the first argument (commands) [upstreamable]
+- omp: track agy 1.5.14 subagent spawns (`step_type: subagent`) on stream-json so `/agy subagents` lists them like on ACP (stream-json) [upstreamable]
