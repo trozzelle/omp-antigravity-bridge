@@ -10,6 +10,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { describe, test } from "vitest";
 import { StreamDriver, waitForPidGroupExit } from "../src/driver.js";
+import { SubagentRoster } from "../src/subagent-roster.js";
 import type { DriverActivity } from "../src/driver-types.js";
 
 const FAKE_BIN_DIR = path.join(import.meta.dirname, "helpers", "fake-agy-bin");
@@ -90,6 +91,59 @@ describe("stream-json driver stdout noise guard", () => {
 		assert.equal(outcome.status, "OK");
 		assert.equal(outcome.conversationId, "conv-noise");
 		assert.equal(outcome.response, "AFTER-NOISE");
+	});
+});
+
+describe("stream-json driver subagent steps", () => {
+	// agy 1.5.14 reports a subagent spawn as step_type "subagent" (tool_name
+	// invoke_subagent, subagent_info) instead of step_type "tool". The driver
+	// must emit it as the same tool activity the ACP path provides so the
+	// roster (/agy subagents) sees it.
+	test("an invoke_subagent step becomes tool activity the roster folds", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "SUBAGENT-STEPS",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const activities: DriverActivity[] = [];
+		const collecting = (async () => {
+			for (;;) {
+				const activity = await handle.next();
+				if (activity === null) return;
+				activities.push(activity);
+			}
+		})();
+		const outcome = await handle.outcome;
+		await collecting;
+		assert.equal(outcome.status, "OK");
+
+		const tools = activities.filter((a) => a.type === "tool_start" || a.type === "tool_done");
+		assert.deepEqual(
+			tools.map((a) => [a.type, a.name, a.stepId]),
+			[
+				["tool_start", "invoke_subagent", 2],
+				["tool_done", "invoke_subagent", 2],
+			],
+		);
+		const start = tools[0];
+		assert.ok(start?.type === "tool_start");
+		assert.deepEqual(start.args, {
+			Subagents: [{ TypeName: "self", Role: "Greeter", Prompt: "Reply with the word HI." }],
+		});
+
+		const roster = new SubagentRoster();
+		for (const activity of activities) roster.fold(activity);
+		const [entry, ...others] = roster.snapshot();
+		assert.equal(others.length, 0);
+		assert.equal(entry?.name, "Greeter");
+		assert.equal(entry?.detail, "Reply with the word HI.");
+		assert.equal(entry?.status, "done");
 	});
 });
 

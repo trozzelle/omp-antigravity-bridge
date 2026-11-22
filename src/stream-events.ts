@@ -16,11 +16,26 @@ export interface AgyUsage {
 }
 
 export type AgyStepState = "ACTIVE" | "DONE" | "ERROR" | string;
-export type AgyStepType = "user_input" | "checkpoint" | "agent_response" | "tool" | (string & {});
+export type AgyStepType = "user_input" | "checkpoint" | "agent_response" | "tool" | "subagent" | (string & {});
 
 export interface AgyToolInfo {
 	name?: string;
 	parameters?: Record<string, unknown>;
+	[key: string]: unknown;
+}
+
+/** One entry of a subagent step's `subagent_info.subagents`. `conversation_id`,
+ *  `log_uri` and `workspace_uris` arrive on the DONE frame only. */
+export interface AgySubagentSpawn {
+	type_name?: string;
+	role?: string;
+	initial_prompt?: string;
+	conversation_id?: string;
+	[key: string]: unknown;
+}
+
+export interface AgySubagentInfo {
+	subagents?: AgySubagentSpawn[];
 	[key: string]: unknown;
 }
 
@@ -31,6 +46,8 @@ export interface AgyStepUpdate {
 	conversation_id?: string;
 	tool_name?: string;
 	tool_info?: AgyToolInfo;
+	/** agy 1.5.14 subagent steps (step_type "subagent", tool_name "invoke_subagent"). */
+	subagent_info?: AgySubagentInfo;
 	response_text?: string;
 	/** Live agy (1.1.13+): agent_response deltas arrive here, not in response_text. */
 	text_delta?: string;
@@ -96,6 +113,25 @@ export function parseAgyLine(line: string): ParsedAgyEvent {
 	if (typeof rec.step_type === "string") return { kind: "step", step: rec as AgyStepUpdate };
 	if (typeof rec.status === "string") return { kind: "result", result: rec as AgyResult };
 	return { kind: "unknown", raw: obj };
+}
+
+/** Tool arguments for an agy subagent step, in the `Subagents` shape the ACP
+ *  path's invoke_subagent rawInput carries ({Role, TypeName, Prompt} per
+ *  spawn), so one roster fold serves both engines. */
+export function subagentStepArgs(step: AgyStepUpdate): Record<string, unknown> {
+	const spawns = step.subagent_info?.subagents;
+	if (!Array.isArray(spawns) || spawns.length === 0) return {};
+	const mapped = spawns.flatMap((spawn) => {
+		if (typeof spawn !== "object" || spawn === null) return [];
+		return [
+			{
+				...(typeof spawn.type_name === "string" ? { TypeName: spawn.type_name } : {}),
+				...(typeof spawn.role === "string" ? { Role: spawn.role } : {}),
+				...(typeof spawn.initial_prompt === "string" ? { Prompt: spawn.initial_prompt } : {}),
+			},
+		];
+	});
+	return mapped.length > 0 ? { Subagents: mapped } : {};
 }
 
 function isUsage(u: unknown): u is AgyUsage {
