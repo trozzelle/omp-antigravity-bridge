@@ -122,6 +122,26 @@ describe("runWebAgent gate", () => {
 		if (!run.ok) expect(run.error).toContain("without an observed read_url_content step");
 	});
 
+	test("a read run answered only by search_web steps is refused as unverified", async () => {
+		// Live agy 1.5.14: read_url_content is never offered to the model, so a
+		// read prompt is answered from search_web. That is not a fetch.
+		const run = await runFixture("read-via-search", { gatedTool: "read_url_content" });
+		expect(run.ok).toBe(false);
+		if (!run.ok) expect(run.error).toContain("without an observed read_url_content step");
+	});
+
+	test("a read run with a search step plus a read step passes (search is secondary)", async () => {
+		const run = await runFixture("read-and-search", { gatedTool: "read_url_content" });
+		expect(run.ok).toBe(true);
+		if (run.ok) expect(run.response).toBe("FAKE ANSWER");
+	});
+
+	test("a search run answered only by read_url_content steps is refused", async () => {
+		const run = await runFixture("ok-read", { gatedTool: "search_web" });
+		expect(run.ok).toBe(false);
+		if (!run.ok) expect(run.error).toContain("without an observed search_web step");
+	});
+
 	test("a disallowed tool step fails the run", async () => {
 		const run = await runFixture("unexpected");
 		expect(run.ok).toBe(false);

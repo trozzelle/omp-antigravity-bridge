@@ -80,6 +80,10 @@ On the stream-json engine each session's agy reaches the bridge through its own 
 
 Compaction, title and branch-summary calls and `/btw` side turns run in a throwaway agy conversation. On the stream-json engine (with its isolated home) each also gets its own agy process, without the bridged tools, so it neither waits for the session's turn nor restarts the session's agy; with the approval gate on, an action that agy wants approved is put to the session that has a turn open, and denied when no session or several sessions do. On ACP they use the session's agy process and wait until its open turn ends, parked tool calls included.
 
+### Web tools
+
+`agy_web_search` and `agy_read_url` (off by default; `/agy web on`) accept an answer only when agy actually ran that tool's own native step: `search_web` for a search, `read_url_content` for a URL read. agy 1.5.14 never offers `read_url_content` to a headless run, so on that version `agy_read_url` fails with "refusing it as unverified" instead of returning text agy found through search. `agy_web_search` works.
+
 ## Checking an install
 
 ```bash
