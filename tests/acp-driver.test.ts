@@ -1200,6 +1200,14 @@ describe("acp/driver silent tool failure (issue #18 F4)", () => {
 		assert.equal(textOf(run.activities), "", "no model text was streamed");
 	});
 
+	test("tool_error carries the arguments of the call that failed", async () => {
+		const run = await tracked("silent-tool-fail", { prompt: "run it" });
+		await run.handle.outcome;
+		const failed = run.activities.find((a) => a.type === "tool_error");
+		assert.ok(failed && failed.type === "tool_error");
+		assert.deepEqual(failed.args, { CommandLine: "boom-cmd" });
+	});
+
 	test("model output after a failed tool suppresses the synthesized note", async () => {
 		const run = await tracked("tool-fail-with-text", { prompt: "run it" });
 		const outcome = await run.handle.outcome;

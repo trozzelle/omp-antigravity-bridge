@@ -51,7 +51,7 @@ import {
 	type NativeDisplayEvent,
 } from "../src/provider.js";
 import { handoffToast } from "../src/handoff-toast.js";
-import { PollRunFolder } from "../src/poll-fold.js";
+import { PollRunFolder, foldPollEvent } from "../src/poll-fold.js";
 import {
 	createShadowTool,
 	stripMarkerFields,
@@ -452,10 +452,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// tag is unreliable on these frames, so the tool name discriminates.
 		if (event.name === POLL_TOOL_NAME) {
 			const view = event.callId ? roundTrips.poll(event.callId) : undefined;
-			const switched = pollRuns.add(view?.name ?? "unknown call", view?.state ?? "running", new Date());
+			const { switched, live } = foldPollEvent(pollRuns, event, view, new Date());
 			if (switched) emitDisplayCard(pi, POLL_RUN_CARD, switched, pollRunSummary(switched));
-			const open = pollRuns.open;
-			setDimStatus("agy-poll", open ? `♊︎ bridge_poll_result → ${open.target} (x${open.count})` : undefined);
+			setDimStatus("agy-poll", live ? `♊︎ bridge_poll_result → ${live.target} (x${live.count})` : undefined);
 			return;
 		}
 		closePollRun();
