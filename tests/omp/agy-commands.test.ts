@@ -128,3 +128,31 @@ describe("/agy tasks and /agy artifacts conversation resolution", () => {
 		]);
 	});
 });
+
+describe("/agy tasks tail", () => {
+	it("/agy tasks tail <id> prints that task's log tail", async () => {
+		bindSession();
+		writeTaskLog(67, "first\nlast line of task 67\n");
+		const notes: Array<{ message: string; level: string }> = [];
+		const agy = await loadAgyCommand();
+		await agy("tasks tail 67", commandCtx(notes, true));
+		expect(notes).toEqual([{ message: "task #67 tail:\nfirst\nlast line of task 67\n", level: "info" }]);
+	});
+
+	it("/agy tasks tail <id> reports an id the conversation does not have", async () => {
+		bindSession();
+		writeTaskLog(67, "x\n");
+		const notes: Array<{ message: string; level: string }> = [];
+		const agy = await loadAgyCommand();
+		await agy("tasks tail 3", commandCtx(notes, true));
+		expect(notes).toEqual([{ message: "no task #3 in this conversation. /agy tasks lists them.", level: "warning" }]);
+	});
+
+	it("/agy tasks tail without a numeric id prints the usage", async () => {
+		bindSession();
+		const notes: Array<{ message: string; level: string }> = [];
+		const agy = await loadAgyCommand();
+		await agy("tasks tail", commandCtx(notes, true));
+		expect(notes).toEqual([{ message: "usage: /agy tasks tail <id>. /agy tasks lists them.", level: "warning" }]);
+	});
+});
