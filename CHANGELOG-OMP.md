@@ -28,3 +28,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: point agy at activate_skill only once the bridge serves it (context)
 - omp: wire the OMP approval gate and session teardown beside upstream's blocks instead of inside them (runtime)
 - omp: draw command output in expanded native-event cards without carriage returns or control bytes (cards) [upstreamable]
+- omp: finish a call whose signal is already aborted as aborted and log it at debug instead of a driver-start-failed error (provider) [upstreamable]
