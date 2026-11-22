@@ -8,13 +8,17 @@ Tested with OMP 19.1.0 and agy 1.5.14.
 
 Requires the `agy` CLI, installed and signed in (run `agy` once to complete Google sign-in).
 
-Pin a release tag. Releases are tagged `v<upstream-version>-omp.<N>`; the latest is listed on the repository's [Releases](https://github.com/trozzelle/omp-antigravity-bridge/releases) and Tags pages.
+Install the newest release through the moving `latest` tag:
 
 ```bash
-omp plugin install github:trozzelle/omp-antigravity-bridge#v<upstream-version>-omp.<N>
+omp plugin install github:trozzelle/omp-antigravity-bridge#latest
 ```
 
-For example, `#v1.13.1-omp.1` is the first OMP release built on upstream 1.13.1. The `main` branch is rebuilt on top of each new upstream release, so its history is rewritten; install from a tag unless you want to follow `main`.
+`latest` always points at the newest release. To move to the next release later, run `omp plugin upgrade omp-antigravity-bridge`: it re-resolves `latest` (a bare `omp plugin upgrade` only covers marketplace plugins).
+
+To stay on one release, pin its tag instead. Releases are tagged `v<upstream-version>-omp.<N>`; for example, `#v1.13.1-omp.1` is the first OMP release built on upstream 1.13.1. The list is on the repository's [Releases](https://github.com/trozzelle/omp-antigravity-bridge/releases) page.
+
+Don't install from `main`: it is rebuilt on top of each new upstream release, so its history is rewritten.
 
 Then pick a model:
 

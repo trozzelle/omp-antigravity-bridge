@@ -93,14 +93,25 @@ jobs:
           } >>"$GITHUB_OUTPUT"
           echo "Promoting $BRANCH ($head) as $tag over main $main"
 
-      - name: Force-push main and tag the release
+      - name: Force-push main, tag the release and move latest
         env:
           HEAD_SHA: ${{ steps.verify.outputs.head }}
           MAIN_SHA: ${{ steps.verify.outputs.main }}
           TAG: ${{ steps.verify.outputs.tag }}
         run: |
           git tag -a "$TAG" -m "$TAG" "$HEAD_SHA"
-          git push --atomic --force-with-lease="main:${MAIN_SHA}" origin "${HEAD_SHA}:refs/heads/main" "refs/tags/${TAG}"
+          # `latest` follows the newest release; `omp plugin upgrade` re-resolves it.
+          git tag -f -a latest -m "latest: $TAG" "$HEAD_SHA"
+          git push --atomic --force-with-lease="main:${MAIN_SHA}" origin \
+            "${HEAD_SHA}:refs/heads/main" "refs/tags/${TAG}" "+refs/tags/latest"
+
+      - name: Publish the GitHub release
+        env:
+          TAG: ${{ steps.verify.outputs.tag }}
+          PR: ${{ steps.verify.outputs.pr }}
+        run: |
+          gh release create "$TAG" --verify-tag --latest --title "$TAG" \
+            --notes "Upstream sync promoted from #${PR}. Install: \`omp plugin install github:${GITHUB_REPOSITORY}#${TAG}\` (or \`#latest\`)."
 
       - name: Close the sync pull request
         env:
