@@ -65,7 +65,7 @@
   },
   "omp": {
     "extensions": [
-      "./extensions/index.ts"
+      "./dist/omp-antigravity-bridge.js"
     ]
   },
   "scripts": {
