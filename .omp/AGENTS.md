@@ -23,6 +23,7 @@ This file lives in `.omp/` on purpose: upstream ships its own root `AGENTS.md` a
 - Keep host-independent bug fixes in their own commits and mark them `[upstreamable]` in `CHANGELOG-OMP.md`, so they can be offered upstream and dropped from the stack once merged.
 - Every patch commit gets a `CHANGELOG-OMP.md` entry.
 - Do not move or rename upstream files. Do not rename the data and log directories (`…/extensions-data/estebanforge/pi-antigravity-bridge`); existing installs depend on them.
+- `README.md` is fork-owned: it is the fork's own distilled README, and the sync keeps it whenever upstream edits theirs (upstream's README stays readable on the `upstream` branch). Sync PRs list upstream README/docs changes; carry new features into `README.md` by hand. Fork-specific behaviour details go in `docs/OMP.md`. Upstream's root `AGENTS.md` and `docs/*` stay untouched.
 
 ## OMP versus pi: host facts the patches rely on
 

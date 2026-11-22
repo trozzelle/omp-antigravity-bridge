@@ -37,3 +37,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: maintain a moving `latest` release tag and publish a GitHub release on promotion (release)
 - omp: publish an OMP marketplace catalog and a self-contained bundle with each release, so `omp plugin upgrade` picks up new releases (release)
 - omp: point installs at the trozzelle/omp-plugins marketplace (docs)
+- omp: replace upstream's README with a distilled OMP README; the sync keeps the fork's README and flags upstream doc changes (docs)

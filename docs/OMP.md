@@ -1,45 +1,10 @@
-# Using the bridge with OMP
+# How this fork differs from upstream
 
-This fork runs the Antigravity bridge inside [OMP (oh-my-pi)](https://github.com/can1357/oh-my-pi). Features match upstream; the differences below come from how OMP differs from pi.
+This fork runs the Antigravity bridge inside [OMP (oh-my-pi)](https://github.com/can1357/oh-my-pi). Features match upstream; the differences below come from how OMP differs from pi. Install and usage: [README](../README.md).
 
 Tested with OMP 19.1.0 and agy 1.5.14.
 
-## Install
-
-Requires the `agy` CLI, installed and signed in (run `agy` once to complete Google sign-in).
-
-Install through the [`trozzelle/omp-plugins`](https://github.com/trozzelle/omp-plugins) marketplace, which a bare `omp plugin upgrade` keeps current:
-
-```bash
-omp plugin marketplace add trozzelle/omp-plugins
-omp plugin install omp-antigravity-bridge@trozzelle
-```
-
-To move to the next release later, run `omp plugin upgrade`. OMP refreshes a marketplace catalog on its own when the cached copy is older than 24 hours; `omp plugin marketplace update trozzelle` checks for a new release immediately.
-
-Each release publishes its own `marketplace.json` pointing at a prebuilt, self-contained bundle (marketplace installs don't run `npm install`, so the bundle carries every dependency itself); the marketplace repository picks it up within six hours. The release asset also works directly as a marketplace source: `https://github.com/trozzelle/omp-antigravity-bridge/releases/latest/download/marketplace.json`. Both are named `trozzelle`, so add only one; to switch, `omp plugin marketplace remove trozzelle` and add the other (the installed plugin stays installed).
-
-Alternatively, install straight from git through the moving `latest` tag:
-
-```bash
-omp plugin install github:trozzelle/omp-antigravity-bridge#latest
-```
-
-`latest` always points at the newest release. Upgrade this kind of install by name, `omp plugin upgrade omp-antigravity-bridge`, which re-resolves `latest`; a bare `omp plugin upgrade` only covers marketplace plugins.
-
-To stay on one release, pin its tag instead. Releases are tagged `v<upstream-version>-omp.<N>`; for example, `#v1.13.1-omp.1` is the first OMP release built on upstream 1.13.1. The list is on the repository's [Releases](https://github.com/trozzelle/omp-antigravity-bridge/releases) page.
-
-Don't install from `main`: it is rebuilt on top of each new upstream release, so its history is rewritten.
-
-Then pick a model:
-
-```
-/model antigravity/gemini-4-hydrogen
-```
-
-Model ids leave out the thinking tier (`antigravity/gemini-3-8-flash`, not `antigravity/gemini-3-8-flash-low`); choose the tier with OMP's thinking level.
-
-Settings, logs and session bindings live under OMP's directories: `~/.omp/agent/antigravity-bridge/` and `~/.omp/extensions-data/estebanforge/pi-antigravity-bridge/logs/`.
+Settings, logs and session bindings live under OMP's directories: `~/.omp/agent/antigravity-bridge/` and `~/.omp/extensions-data/estebanforge/pi-antigravity-bridge/logs/`. Model ids leave out the thinking tier (`antigravity/gemini-3-8-flash`, not `antigravity/gemini-3-8-flash-low`); choose the tier with OMP's thinking level (`:low`, `:high`, …).
 
 ## Differences from upstream
 
@@ -99,24 +64,3 @@ Compaction, title and branch-summary calls and `/btw` side turns run in a throwa
 
 `agy_web_search` and `agy_read_url` (off by default; `/agy web on`) accept an answer only when agy actually ran that tool's own native step: `search_web` for a search, `read_url_content` for a URL read. agy 1.5.14 never offers `read_url_content` to a headless run, so on that version `agy_read_url` fails with "refusing it as unverified" instead of returning text agy found through search. `agy_web_search` works.
 
-## Checking an install
-
-```bash
-/agy doctor
-```
-
-In the TUI it prints bridge state, versions and the log directory. In print mode (`omp -p`) it writes the same report to stdout.
-
-## Contributing
-
-This repository keeps upstream's code on the `upstream` branch and adds OMP patches on `main`. A weekly workflow rebases the patches onto new upstream releases and opens a pull request; a maintainer promotes a green sync to `main` and tags it. Patch conventions and the verification commands are in `.omp/AGENTS.md`. Run before sending a change:
-
-```bash
-npm install
-npm run typecheck
-npm test
-npm run test:bun
-npm run smoke:omp
-```
-
-`scripts/omp/smoke-live.sh` runs the end-to-end checks against a signed-in agy. It uses small prompts, but they count against your Antigravity quota.

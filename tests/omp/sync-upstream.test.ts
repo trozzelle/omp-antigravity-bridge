@@ -110,6 +110,7 @@ beforeEach(() => {
 		"package.json": upstreamPackageJson("1.0.0"),
 		"CHANGELOG.md": changelog(["1.0.0"]),
 		"src/a.ts": "export const greeting = 'hello';\nexport const answer = 42;\n",
+		"README.md": "# bridge\n\nUpstream intro for pi.\n",
 	});
 	write(path.join(mono, "packages/other/index.ts"), "export const other = 2;\n");
 	git(mono, "commit", "-q", "-am", "chore(other): unrelated change");
@@ -186,6 +187,25 @@ describe("sync-upstream.sh", { timeout: 30_000 }, () => {
 		expect(r.out.base_version).toBe("1.0.0");
 		expect(JSON.parse(git(fork, "show", `sync/${short}:package.json`))).toEqual(applyOverrides(JSON.parse(bumped)));
 		expect(git(fork, "log", "--format=%s", `upstream..sync/${short}`)).toContain("omp: packaging");
+	});
+
+	it("keeps the fork's README when upstream edits its own", () => {
+		const forkReadme = "# omp bridge\n\nThe fork's own README.\n";
+		write(path.join(fork, "README.md"), forkReadme);
+		git(fork, "commit", "-q", "-am", "omp: fork readme");
+		commitUpstream("docs: expand readme", {
+			"README.md": "# bridge\n\nUpstream intro for pi, now longer.\n",
+		});
+		const short = splitOf(mono).slice(0, 7);
+
+		const r = runSync();
+
+		expect(r.code, r.stderr).toBe(0);
+		expect(r.out.status).toBe("synced");
+		expect(r.stderr).toContain("keeping the fork's README");
+		expect(git(fork, "show", `sync/${short}:README.md`)).toBe(forkReadme.trimEnd());
+		expect(git(fork, "show", `upstream:README.md`)).toContain("now longer");
+		expect(git(fork, "log", "--format=%s", `upstream..sync/${short}`)).toContain("omp: fork readme");
 	});
 
 	it("stops on any other conflict, names the failing patch, and leaves the repo clean", () => {
