@@ -29,3 +29,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: wire the OMP approval gate and session teardown beside upstream's blocks instead of inside them (runtime)
 - omp: draw command output in expanded native-event cards without carriage returns or control bytes (cards) [upstreamable]
 - omp: finish a call whose signal is already aborted as aborted and log it at debug instead of a driver-start-failed error (provider) [upstreamable]
+- omp: count each bridge_poll_result poll once in the poll-run card instead of on both its started and completed events, and attribute a failed poll to its call (cards) [upstreamable]

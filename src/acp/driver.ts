@@ -576,7 +576,7 @@ export class AcpDriver implements TurnDriver {
 					turn.sawToolError = true;
 					turn.lastToolError = { name, message: mapped.message };
 				}
-				this.#emit(turn, { type: "tool_error", name, message: mapped.message, mcpServer: mapped.mcpServer ?? entry?.mcpServer, toolCallId: mapped.toolCallId });
+				this.#emit(turn, { type: "tool_error", name, message: mapped.message, mcpServer: mapped.mcpServer ?? entry?.mcpServer, toolCallId: mapped.toolCallId, args: entry?.args });
 				return;
 			}
 			case "replay_user":

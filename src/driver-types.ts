@@ -76,7 +76,16 @@ export type DriverActivity =
 			 *  sets it; the provider renders it without any git subprocess. */
 			diff?: { path: string; oldText?: string; newText: string };
 	  }
-	| { type: "tool_error"; stepId?: number; name: string; message: string; mcpServer?: string; toolCallId?: string }
+	| {
+			type: "tool_error";
+			stepId?: number;
+			name: string;
+			message: string;
+			mcpServer?: string;
+			toolCallId?: string;
+			/** ACP only: the failed call's arguments, as stored at its start. */
+			args?: Record<string, unknown>;
+	  }
 	| { type: "usage"; usage: AgyUsage }
 	/** Synthetic: injected by the provider when the MCP bridge receives a call
 	 *  (G9). Parks the turn: output is expected to stall while pi executes the
