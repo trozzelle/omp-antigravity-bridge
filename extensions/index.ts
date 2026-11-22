@@ -1386,6 +1386,20 @@ function statusText(ctx: AgyCommandCtx): string {
 }
 
 
+/** The conversation /agy tasks and /agy artifacts act on: the one this
+ *  session's engine-scoped key is bound to in the session store. The driver
+ *  snapshot is only a fallback for a session with no binding yet: it reports
+ *  the driver's last settled session, and OMP's auxiliary one-shot calls
+ *  (title, compaction) run on the same ACP driver and overwrite that with a
+ *  throwaway session. */
+function currentConversationId(ctx: AgyCommandCtx, cmdCtx: ExtensionCommandContext): string | undefined {
+	const sid = liveSessionId(cmdCtx.sessionManager);
+	const key = sessionKey(sid ? { sessionId: sid } : undefined, cmdCtx.cwd, ctx.engine);
+	const bound = ctx.store.get(key)?.conversationId;
+	if (bound) return bound;
+	return (ctx.engine === "acp" ? ctx.acpDriver : ctx.driver).snapshot().conversationId ?? undefined;
+}
+
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
@@ -1610,8 +1624,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			}
 			if (sub === "tasks") {
 				const engine = ctx.engine;
-				const snap = (engine === "acp" ? ctx.acpDriver : ctx.driver).snapshot();
-				const conversationId = snap.conversationId ?? undefined;
+				const conversationId = currentConversationId(ctx, cmdCtx);
 				if (!conversationId) {
 					ui?.notify("no Antigravity conversation bound yet; run a turn first.", "warning");
 					return;
@@ -1674,8 +1687,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			}
 			if (sub === "artifacts") {
 				const engine = ctx.engine;
-				const snap = (engine === "acp" ? ctx.acpDriver : ctx.driver).snapshot();
-				const conversationId = snap.conversationId ?? undefined;
+				const conversationId = currentConversationId(ctx, cmdCtx);
 				if (!conversationId) {
 					ui?.notify("no Antigravity conversation bound yet; run a turn first.", "warning");
 					return;

@@ -31,3 +31,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: finish a call whose signal is already aborted as aborted and log it at debug instead of a driver-start-failed error (provider) [upstreamable]
 - omp: count each bridge_poll_result poll once in the poll-run card instead of on both its started and completed events, and attribute a failed poll to its call (cards) [upstreamable]
 - omp: verify each web run on its own tool's step: `agy_read_url` answered only by `search_web` (agy 1.5.14 never offers `read_url_content` headlessly) is refused as unverified instead of returned as a page read (web-tools) [upstreamable]
+- omp: resolve /agy tasks and /agy artifacts from the session's bound conversation, not the ACP driver's last settled session that auxiliary calls overwrite (commands)
