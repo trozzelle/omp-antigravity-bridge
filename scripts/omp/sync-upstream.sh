@@ -6,9 +6,11 @@
 #      is deterministic, so an unchanged upstream yields the same commit.
 #   2. Fast-forward the local `upstream` branch to the split tip.
 #   3. Create `sync/<short-sha>` = `main` rebased onto `upstream`.
-#      A conflict in package.json alone is resolved by taking upstream's file
-#      and re-running scripts/omp/apply-package-overrides.mjs. Any other
-#      conflict aborts the rebase and names the failing patch commit.
+#      Conflicts in fork-owned files resolve automatically: package.json takes
+#      upstream's file and re-runs scripts/omp/apply-package-overrides.mjs;
+#      README.md keeps the fork's README (upstream's stays on the upstream
+#      branch). Any other conflict aborts the rebase and names the failing
+#      patch commit.
 #
 # Run from the root of a clone of the fork with a clean worktree and a git
 # identity configured. Local branches `upstream` and `main` are created from
@@ -175,11 +177,28 @@ while [[ $status -ne 0 ]]; do
 	}
 	failing="$(git log -1 --format='%h %s' REBASE_HEAD)"
 	conflicts="$(git diff --name-only --diff-filter=U)"
-	if [[ "$conflicts" == "package.json" && -f "$OVERRIDES_SCRIPT" ]]; then
-		echo "sync-upstream: $failing: package.json conflict, taking upstream's file and re-applying overrides" >&2
-		git show upstream:package.json >package.json
-		node "$OVERRIDES_SCRIPT"
-		git add package.json
+	# Fork-owned files: package.json is upstream's file plus the overrides;
+	# README.md is the fork's own README (upstream's stays on the upstream branch).
+	auto=1
+	while IFS= read -r file; do
+		case "$file" in
+		package.json) [[ -f "$OVERRIDES_SCRIPT" ]] || auto=0 ;;
+		README.md) ;;
+		*) auto=0 ;;
+		esac
+	done <<<"$conflicts"
+	if [[ $auto -eq 1 && -n "$conflicts" ]]; then
+		if grep -qx 'package.json' <<<"$conflicts"; then
+			echo "sync-upstream: $failing: package.json conflict, taking upstream's file and re-applying overrides" >&2
+			git show upstream:package.json >package.json
+			node "$OVERRIDES_SCRIPT"
+			git add package.json
+		fi
+		if grep -qx 'README.md' <<<"$conflicts"; then
+			echo "sync-upstream: $failing: README.md conflict, keeping the fork's README" >&2
+			git checkout --theirs -- README.md
+			git add README.md
+		fi
 		status=0
 		if git diff --cached --quiet HEAD; then
 			rebase rebase --skip || status=$?

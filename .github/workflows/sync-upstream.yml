@@ -145,6 +145,20 @@ jobs:
             else
               echo "_No new upstream changelog sections._"
             fi
+            echo
+            echo "## Upstream docs changed"
+            echo
+            # The fork keeps its own README; carry new upstream features into it by hand.
+            docs_base="$(git merge-base main upstream)"
+            if git diff --quiet "$docs_base" upstream -- README.md docs; then
+              echo "_No upstream README or docs changes._"
+            else
+              echo "Review these upstream changes and update the fork's README.md where they add or change features:"
+              echo
+              echo '```'
+              git diff --stat "$docs_base" upstream -- README.md docs
+              echo '```'
+            fi
           } >"$body"
           # GitHub caps PR bodies at 65536 characters.
           if [ "$(wc -c <"$body")" -gt 60000 ]; then
