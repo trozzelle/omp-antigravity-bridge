@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { Component } from "@earendil-works/pi-tui";
 import type { NativeDisplayEvent } from "../../src/provider.js";
@@ -9,6 +10,7 @@ import {
 	nativeEventSummary,
 	pollRunSummary,
 	registerCardRenderers,
+	renderNativeEventCard,
 	type CardEntryRenderer,
 	type CardHost,
 	type CardMessage,
@@ -137,6 +139,38 @@ describe("cards under OMP", () => {
 		if (!render) throw new Error("poll-run renderer not registered");
 		expect(draw(render({ details: pollRun }, { expanded: false }, theme))).toEqual([
 			"♊︎ <toolTitle>bridge_poll_result</toolTitle> <muted>Poll git_commit (x3, failed)</muted>",
+		]);
+	});
+});
+
+describe("native event card terminal safety", () => {
+	test("expanded command output drops the carriage return of CRLF line endings", () => {
+		const lines = draw(renderNativeEventCard({ name: "run_command", status: "completed", command: "echo CARD_TEST", output: "CARD_TEST\r\n" }, true, theme));
+		assert.ok(lines.includes("<toolOutput>CARD_TEST</toolOutput>"), JSON.stringify(lines));
+		assert.ok(lines.every((line) => !line.includes("\r")), JSON.stringify(lines));
+	});
+
+	test("bare carriage returns become line breaks and other control bytes are stripped from output, diff and command", () => {
+		const lines = draw(
+			renderNativeEventCard(
+				{
+					name: "run_command",
+					status: "failed",
+					command: "echo a\r\nb\x1b[2J",
+					output: "10%\r50%\r100%\x07\x00 done",
+					diff: "-old\r\n+new\x08",
+				},
+				true,
+				theme,
+			),
+		);
+		assert.deepEqual(lines, [
+			"<error>✗</error> <toolTitle>run_command</toolTitle> <muted>echo a</muted>",
+			"<toolDiffRemoved>-old</toolDiffRemoved>",
+			"<toolDiffAdded>+new</toolDiffAdded>",
+			"<toolOutput>10%</toolOutput>",
+			"<toolOutput>50%</toolOutput>",
+			"<toolOutput>100% done</toolOutput>",
 		]);
 	});
 });
