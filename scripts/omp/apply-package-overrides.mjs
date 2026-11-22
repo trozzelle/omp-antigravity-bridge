@@ -14,6 +14,7 @@ const SCRIPTS = {
 	test: "vitest run",
 	"test:bun": "bunx --bun vitest run",
 	"smoke:omp": "bash scripts/omp/smoke-load.sh",
+	"build:bundle": "bun scripts/omp/build-bundle.mjs",
 };
 
 const DEV_DEPENDENCIES = {
@@ -21,6 +22,8 @@ const DEV_DEPENDENCIES = {
 	"@earendil-works/pi-coding-agent": "^1.6.0",
 	"@earendil-works/pi-tui": "^1.6.0",
 	"@types/node": "^22.0.0",
+	"@types/semver": "^7.7.0",
+	semver: "^7.7.0",
 	tsx: "^4.19.0",
 	typebox: "^1.3.4",
 	typescript: "^5.8.0",

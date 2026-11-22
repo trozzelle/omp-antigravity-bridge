@@ -7,12 +7,19 @@
 # missing binary, so the bridge always registers its fallback catalog
 # (FALLBACK_MODELS in src/models.ts) whether or not agy is installed.
 #
-# Usage: npm run smoke:omp   (or: bash scripts/omp/smoke-load.sh)
+# Usage: npm run smoke:omp   (or: bash scripts/omp/smoke-load.sh [dir])
+# With a dir argument the smoke loads that directory instead of this checkout.
+# Use it for the marketplace bundle layout (package.json + dist/, no
+# node_modules); see scripts/omp/smoke-bundle.sh.
 # Env:   OMP_BIN (default: omp on PATH), SMOKE_TIMEOUT_SECS (default 120)
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
-root="$(pwd)"
+repo="$(pwd)"
+root="$repo"
+if [[ $# -gt 0 ]]; then
+	root="$(cd "$1" && pwd)"
+fi
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -21,7 +28,12 @@ fail() {
 
 omp_bin="${OMP_BIN:-$(command -v omp || true)}"
 [[ -n "$omp_bin" ]] || fail "omp not found on PATH (install: bun install -g @oh-my-pi/pi-coding-agent)"
-[[ -d node_modules/@modelcontextprotocol/sdk ]] || fail "dependencies missing; run npm install first"
+if [[ "$root" == "$repo" ]]; then
+	[[ -d node_modules/@modelcontextprotocol/sdk ]] || fail "dependencies missing; run npm install first"
+else
+	# A dir argument stands for a marketplace install, which never runs npm install.
+	[[ ! -e "$root/node_modules" ]] || fail "$root has node_modules; the layout under test must be self-contained"
+fi
 
 # Expected models: every id in FALLBACK_MODELS, as antigravity/<id>.
 expected="$(awk '
