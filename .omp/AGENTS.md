@@ -10,6 +10,7 @@ This file lives in `.omp/` on purpose: upstream ships its own root `AGENTS.md` a
 
 - `upstream`: output of `git subtree split --prefix=packages/pi-antigravity-bridge` over upstream `main`. Never edit, commit to, or rebase it by hand; only the sync flow fast-forwards it.
 - `main`: `upstream` plus the OMP patch stack. Each sync rebases `main` onto the new `upstream` and force-pushes it. Releases are tagged `v<upstream-version>-omp.<N>` and stay reachable; the annotated `latest` tag is force-moved to the newest release (by `promote-sync.yml`, together with a GitHub release marked latest). Never point `latest` at anything but a release tag's commit.
+- `v<release>-bundle` tags: for each release, `promote-sync.yml` runs `scripts/omp/marketplace-release.sh <tag> --push`, which commits a prebuilt `dist/omp-antigravity-bridge.js` (built by `scripts/omp/build-bundle.mjs`, `dist/` is gitignored on main) plus a `package.json` whose `omp.extensions` points at it on top of the release commit, tags that commit `<tag>-bundle`, and uploads `marketplace.json` to the GitHub release (`scripts/omp/marketplace-catalog.mjs`). These commits are not on `main`. Marketplace installs clone the `-bundle` tag and never run `npm install`, so the bundle must inline every runtime dependency; `scripts/omp/smoke-bundle.sh` (run by CI) loads it from a layout with no `node_modules`. The catalog `version` is the release tag minus `v`; `omp plugin upgrade` needs it to be semver-newer than the installed one, which the `-omp.<N>` counter guarantees. Never delete or move a `-bundle` tag a published catalog points at.
 - `sync/<upstream-short-sha>`: candidate branches produced by the sync workflow. Promotion to `main` is a separate, deliberate step.
 - To change behaviour, amend or add a commit in the patch stack. Never rewrite upstream commits.
 
@@ -42,6 +43,7 @@ OMP loads pi extensions through a compatibility layer that rewrites `@earendil-w
 - `npm test`: upstream Vitest suite plus `tests/omp/*.test.ts` (OMP-shaped contexts, schemas, approval tool, singleton teardown).
 - `npm run test:bun`: the suite under the Bun runtime, which catches Bun-only failures.
 - `npm run smoke:omp`: loads the extension in a real `omp` with no extension discovery and checks that `antigravity/*` models register with zero load errors. Works without `agy`, using the fallback catalog.
+- `bash scripts/omp/smoke-bundle.sh`: builds the marketplace bundle and runs the load smoke on a `package.json` + `dist/` layout with no `node_modules` (needs `bun`).
 - `bash scripts/omp/smoke-live.sh`: manual live checklist. Needs an authenticated `agy`; run it before promoting a sync. Keep prompts tiny, because they spend Antigravity quota.
 
 Install dependencies with `npm install --legacy-peer-deps`.

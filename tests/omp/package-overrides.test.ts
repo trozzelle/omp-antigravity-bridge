@@ -30,7 +30,7 @@ describe("applyOverrides", () => {
 		expect(out.peerDependencies).toEqual(upstream.peerDependencies);
 		expect(out.files).toContain("CHANGELOG-OMP.md");
 		expect(out.keywords).toEqual(expect.arrayContaining(["pi-package", "agy", "omp", "oh-my-pi"]));
-		expect(out.scripts).toMatchObject({ typecheck: "tsc --noEmit", test: "vitest run", "smoke:omp": "bash scripts/omp/smoke-load.sh" });
+		expect(out.scripts).toMatchObject({ typecheck: "tsc --noEmit", test: "vitest run", "smoke:omp": "bash scripts/omp/smoke-load.sh", "build:bundle": "bun scripts/omp/build-bundle.mjs" });
 		expect(out.devDependencies).toMatchObject({ vitest: "^4.1.9", "@earendil-works/pi-coding-agent": "^1.6.0" });
 		expect(String(out.description)).toMatch(/^OMP port of @estebanforge\/pi-antigravity-bridge\. Gemini provider for Pi\.$/);
 	});

@@ -17,6 +17,11 @@ concurrency:
   group: promote-sync
   cancel-in-progress: false
 
+env:
+  # Keep in step with ci.yml: the marketplace bundle is built and smoke-tested there.
+  BUN_VERSION: "1.4.5"
+  NODE_VERSION: "22"
+
 jobs:
   promote:
     runs-on: ubuntu-latest
@@ -112,6 +117,23 @@ jobs:
         run: |
           gh release create "$TAG" --verify-tag --latest --title "$TAG" \
             --notes "Upstream sync promoted from #${PR}. Install: \`omp plugin install github:${GITHUB_REPOSITORY}#${TAG}\` (or \`#latest\`)."
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Publish the marketplace bundle and catalog
+        env:
+          TAG: ${{ steps.verify.outputs.tag }}
+        run: |
+          # Pushes <tag>-bundle (the release commit plus a prebuilt bundle) and
+          # attaches marketplace.json to the release; main is not touched.
+          # releases/latest/download/marketplace.json then serves this catalog.
+          bash scripts/omp/marketplace-release.sh "$TAG" --push
 
       - name: Close the sync pull request
         env:

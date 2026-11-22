@@ -58,3 +58,8 @@ jobs:
 
       - name: Load smoke (omp)
         run: npm run smoke:omp
+
+      - name: Marketplace bundle smoke (omp)
+        # Builds the bundle and loads it from a package.json + dist/ layout with
+        # no node_modules, the way a marketplace install sees it.
+        run: bash scripts/omp/smoke-bundle.sh
