@@ -56,9 +56,24 @@ function isPollRunData(value: unknown): value is PollRunData {
 
 const firstLine = (value: string | undefined): string | undefined => value?.split(/\r?\n/, 1)[0].trim() || undefined;
 
+/** Terminal-safe card text. Line endings fold to "\n" (a "\r" would send the
+ *  cursor home and let the padding overwrite the line: `CARD_TEST\r\n` drew
+ *  blank). Remaining C0 controls (ESC included) and DEL are dropped; tab and
+ *  newline stay. Trailing newlines carry no content. */
+export function sanitizeCardText(value: string): string {
+	return value
+		.replace(/\r\n?/g, "\n")
+		// eslint-disable-next-line no-control-regex
+		.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+		.replace(/\n+$/, "");
+}
+
+const sanitizeOptional = (value: string | undefined): string | undefined => (value === undefined ? undefined : sanitizeCardText(value));
+
 /** Native Antigravity tool step: status mark, tool name, most specific detail; expanded adds path, diff and output. */
 export function renderNativeEventCard(data: unknown, expanded: boolean, theme: CardTheme): Text {
-	const event = isNativeDisplayEvent(data) ? data : undefined;
+	const raw = isNativeDisplayEvent(data) ? data : undefined;
+	const event = raw && { ...raw, command: sanitizeOptional(raw.command), output: sanitizeOptional(raw.output), diff: sanitizeOptional(raw.diff) };
 	// Collapsed detail: most-specific signal wins (path, command, agy's own
 	// display text). The name is NOT a fallback here - it rendered "ls ls"
 	// duplication whenever the event carried neither path nor command.
@@ -73,7 +88,9 @@ export function renderNativeEventCard(data: unknown, expanded: boolean, theme: C
 				lines.push(theme.fg(color, line));
 			}
 		}
-		if (event?.output && (!event.diff || event.status === "failed")) lines.push(theme.fg("toolOutput", event.output));
+		if (event?.output && (!event.diff || event.status === "failed")) {
+			for (const line of event.output.split("\n")) lines.push(theme.fg("toolOutput", line));
+		}
 	}
 	return new Text(lines.join("\n"), 0, 0);
 }

@@ -27,3 +27,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: fail closed on agy's own permission requests while the approval gate is on: skipPermissions no longer auto-allows them, approvals.mode allow/deny decide, ask/inherit park on the permission dialog; permission log events carry the tool identity (approval) [upstreamable]
 - omp: point agy at activate_skill only once the bridge serves it (context)
 - omp: wire the OMP approval gate and session teardown beside upstream's blocks instead of inside them (runtime)
+- omp: draw command output in expanded native-event cards without carriage returns or control bytes (cards) [upstreamable]
