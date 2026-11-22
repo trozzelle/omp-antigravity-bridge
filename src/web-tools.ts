@@ -7,8 +7,14 @@
 // Each call spawns `agy --agent <temporary> --print <query> --mode plan
 // --output-format stream-json` with a temporary agent restricted to
 // search_web + read_url_content (bridge MCP inheritance off), then gates the
-// answer on an observed allowed-tool step. Gate accepts both status spellings
-// the CLI has shipped (driver.ts: "SUCCESS" live, "OK" older builds).
+// answer on an observed step of the run's OWN gated tool. A step of the other
+// allowed tool never satisfies the gate: on agy 1.5.14 the headless model is
+// never offered read_url_content (declaring it is accepted but dropped; the
+// name `read_url` makes agy refuse the whole agent), so a read prompt gets
+// answered from search_web - plausible text that was not fetched. That run is
+// refused as unverified rather than returned as a page read. Gate accepts both
+// status spellings the CLI has shipped (driver.ts: "SUCCESS" live, "OK" older
+// builds).
 //
 // Temp agent dirs live in the user-global ~/.gemini/config/agents (the only
 // location agy 1.2.9 discovers; no --agent-dir flag exists). Normal cleanup is
@@ -120,7 +126,7 @@ export function webAgentMd(name: string): string {
 }
 
 /** One gated one-shot web run. Creates a unique restricted agent, streams the
- *  NDJSON frames, refuses answers with no observed allowed-tool step, and
+ *  NDJSON frames, refuses answers with no observed `gatedTool` step, and
  *  always removes the agent dir. */
 export async function runWebAgent(opts: WebRunOptions): Promise<WebRunResult> {
 	const root = opts.agentsRoot ?? webAgentsRoot();
@@ -160,7 +166,7 @@ export async function runWebAgent(opts: WebRunOptions): Promise<WebRunResult> {
 	let bytes = 0;
 	let stderrTail = "";
 	let failed = "";
-	let allowedToolUsed = false;
+	let gatedToolUsed = false;
 	let response = "";
 
 	try {
@@ -188,7 +194,7 @@ export async function runWebAgent(opts: WebRunOptions): Promise<WebRunResult> {
 		});
 		if (!failed && opts.signal?.aborted) failed = "web run aborted";
 		if (!failed && code !== 0) failed = `agy exited with code ${code}${stderrTail ? `: ${redactText(stderrTail.trim()).slice(-300)}` : ""}`;
-		if (!failed && !allowedToolUsed) failed = `Antigravity returned an answer without an observed ${opts.gatedTool} step; refusing it as unverified`;
+		if (!failed && !gatedToolUsed) failed = `Antigravity returned an answer without an observed ${opts.gatedTool} step; refusing it as unverified`;
 		if (!failed && response === "") failed = "Antigravity web run produced no answer";
 		if (failed) {
 			opts.log?.("web-run-failed", { agent: agentName, error: failed }, "warn");
@@ -221,8 +227,10 @@ export async function runWebAgent(opts: WebRunOptions): Promise<WebRunResult> {
 			const step = record.step_update as Record<string, unknown>;
 			if (step.step_type !== "tool" || typeof step.tool_name !== "string") return;
 			if (ALLOWED_TOOLS.has(step.tool_name)) {
-				// Drift tolerance: DONE today, OK on older builds (driver.ts:507).
-				if (step.state === "DONE" || step.state === "OK") allowedToolUsed = true;
+				// Only the run's own gated tool verifies the answer; the other
+				// allowed tool is a tolerated secondary step. Drift tolerance:
+				// DONE today, OK on older builds (driver.ts:507).
+				if (step.tool_name === opts.gatedTool && (step.state === "DONE" || step.state === "OK")) gatedToolUsed = true;
 			} else if (step.state === "ACTIVE" || step.state === "DONE") {
 				failed = `Antigravity web agent used a disallowed tool: ${step.tool_name}`;
 				stop();
