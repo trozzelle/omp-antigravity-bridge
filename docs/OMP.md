@@ -8,16 +8,16 @@ Tested with OMP 19.1.0 and agy 1.5.14.
 
 Requires the `agy` CLI, installed and signed in (run `agy` once to complete Google sign-in).
 
-Install through the marketplace, which a bare `omp plugin upgrade` keeps current:
+Install through the [`trozzelle/omp-plugins`](https://github.com/trozzelle/omp-plugins) marketplace, which a bare `omp plugin upgrade` keeps current:
 
 ```bash
-omp plugin marketplace add https://github.com/trozzelle/omp-antigravity-bridge/releases/latest/download/marketplace.json
+omp plugin marketplace add trozzelle/omp-plugins
 omp plugin install omp-antigravity-bridge@trozzelle
 ```
 
 To move to the next release later, run `omp plugin upgrade`. OMP refreshes a marketplace catalog on its own when the cached copy is older than 24 hours; `omp plugin marketplace update trozzelle` checks for a new release immediately.
 
-Each release publishes its own `marketplace.json` (the `latest` URL above always serves the newest) pointing at a prebuilt, self-contained bundle: marketplace installs don't run `npm install`, so the bundle carries every dependency itself.
+Each release publishes its own `marketplace.json` pointing at a prebuilt, self-contained bundle (marketplace installs don't run `npm install`, so the bundle carries every dependency itself); the marketplace repository picks it up within six hours. The release asset also works directly as a marketplace source: `https://github.com/trozzelle/omp-antigravity-bridge/releases/latest/download/marketplace.json`. Both are named `trozzelle`, so add only one; to switch, `omp plugin marketplace remove trozzelle` and add the other (the installed plugin stays installed).
 
 Alternatively, install straight from git through the moving `latest` tag:
 
