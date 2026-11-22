@@ -1630,7 +1630,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					return;
 				}
 				const dir = agyConversationDir(engine, conversationId);
-				const rest = (args ?? "").trim().split(/\s+/);
+				const rest = (args ?? "").trim().split(/\s+/).slice(1);
 
 				// /agy tasks tail <id>: last bytes of one task log into chat.
 				// Resolved against the scanned list, not a rebuilt filename:
