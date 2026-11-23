@@ -1,21 +1,34 @@
-// Display-only ACP cards (agy-native-event, agy-poll-run) on both hosts.
+// Display of ACP native tool steps (agy-native-event, agy-poll-run) on both hosts.
 //
 // pi draws custom session entries: registerEntryRenderer + appendEntry.
 // OMP has no registerEntryRenderer and never draws appendEntry rows, so
 // there the same cards travel as display-only custom messages:
 // registerMessageRenderer + sendMessage({ display, excludeFromContext }).
-// excludeFromContext keeps them out of the model's context; OMP persists
-// them and redraws them on resume. Both paths share one renderer per card,
-// so a card looks the same on either host.
+// OMP sends custom messages to the model as developer messages whatever
+// excludeFromContext says, so a context filter drops the cards again; OMP
+// persists them and redraws them on resume. Both paths share one renderer
+// per card, so a card looks the same on either host.
+//
+// A card sent mid-reply on OMP queues as steering and lands below the
+// finished answer. acp.nativeSteps "inline" (the OMP default) skips the
+// cards and returns nativeStepTrace() text for the reply's thinking stream.
 
 import path from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
+import type { AgyConfig, NativeSteps } from "../config.js";
 import { POLL_TOOL_NAME, type NativeDisplayEvent } from "../provider.js";
 import type { PollRunData } from "../poll-fold.js";
 import { isOmpHost } from "./host.js";
 
 export const NATIVE_EVENT_CARD = "agy-native-event";
 export const POLL_RUN_CARD = "agy-poll-run";
+
+/** Where native steps show: pi always draws cards; OMP follows
+ *  acp.nativeSteps, inline by default. */
+export function nativeStepMode(config: Pick<AgyConfig, "acp">): NativeSteps {
+	return isOmpHost() ? (config.acp.nativeSteps ?? "inline") : "cards";
+}
 
 /** The slice of the host theme the cards use (pi Theme and OMP Theme both fit). */
 export interface CardTheme {
@@ -114,6 +127,38 @@ export function nativeEventSummary(event: NativeDisplayEvent): string {
 	return `[${NATIVE_EVENT_CARD}] ${event.status === "failed" ? "✗" : "✓"} ${event.name}${detail ? ` ${detail}` : ""}`;
 }
 
+/** A backtick run longer than any inside `text` and at least `min` long
+ *  (CommonMark: such a fence cannot be closed by the text itself). */
+function backtickFence(text: string, min: number): string {
+	const longest = Math.max(0, ...Array.from(text.matchAll(/`+/g), (m) => m[0].length));
+	return "`".repeat(Math.max(min, longest + 1));
+}
+
+/** Inline code span that survives backticks inside `text`, padded with
+ *  spaces when the text holds any. */
+function codeSpan(text: string): string {
+	const fence = backtickFence(text, 1);
+	return text.includes("`") ? `${fence} ${text} ${fence}` : `${fence}${text}${fence}`;
+}
+
+/** One native step as a markdown paragraph for the reply's thinking stream:
+ *  status mark, tool name and the card's collapsed detail; a failure adds
+ *  the error's first line, an edit its diff in a fenced block. */
+export function nativeStepTrace(event: NativeDisplayEvent): string {
+	const command = sanitizeOptional(event.command);
+	const output = sanitizeOptional(event.output);
+	const failed = event.status === "failed";
+	// The card's collapsed detail; a failure's output is the error, shown after.
+	const detail = event.path ? path.basename(event.path) : firstLine(command) ?? (failed ? undefined : firstLine(output));
+	let line = `${failed ? "✗" : "✓"} ${event.name}${detail ? ` ${codeSpan(sanitizeCardText(detail).slice(0, 160))}` : ""}`;
+	const error = failed ? firstLine(output) : undefined;
+	if (error) line += `: ${error.slice(0, 200)}`;
+	const diff = sanitizeOptional(event.diff);
+	if (!diff) return `\n${line}\n\n`;
+	const fence = backtickFence(diff, 3);
+	return `\n${line}\n${fence}diff\n${diff}\n${fence}\n\n`;
+}
+
 export function pollRunSummary(run: PollRunData): string {
 	return `[${POLL_RUN_CARD}] ${POLL_TOOL_NAME} → ${run.target} (x${run.count}${run.state === "failed" ? ", failed" : ""})`;
 }
@@ -137,4 +182,20 @@ export function emitDisplayCard(pi: CardHost, customType: string, data: unknown,
 		return;
 	}
 	pi.sendMessage({ customType, content: summary, display: true, details: data, excludeFromContext: true });
+}
+
+/** The ExtensionAPI slice the context filter needs. */
+export type CardContextHost = Pick<ExtensionAPI, "on">;
+
+function isCardMessage(message: unknown): boolean {
+	if (typeof message !== "object" || message === null) return false;
+	const { role, customType } = message as { role?: unknown; customType?: unknown };
+	return role === "custom" && (customType === NATIVE_EVENT_CARD || customType === POLL_RUN_CARD);
+}
+
+/** OMP: keep card messages, including cards saved by earlier sessions, out
+ *  of the model's context. pi stores cards as entries, never as messages. */
+export function registerCardContextFilter(pi: CardContextHost): void {
+	if (!isOmpHost()) return;
+	pi.on("context", (event) => (event.messages.some(isCardMessage) ? { messages: event.messages.filter((m) => !isCardMessage(m)) } : undefined));
 }

@@ -49,6 +49,7 @@ import {
 	rotateSessionOnCompaction,
 	sessionKey,
 	type NativeDisplayEvent,
+	type NativeEventSink,
 } from "../src/provider.js";
 import { handoffToast } from "../src/handoff-toast.js";
 import { PollRunFolder, foldPollEvent } from "../src/poll-fold.js";
@@ -70,7 +71,7 @@ import { agyAuthenticationMessage } from "../src/agy-install.js";
 import { createAgySetupOffer } from "../src/agy-setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { configPath, configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { configPath, configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, toNativeSteps, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type NativeSteps, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { agyVersionVerdict, agyUpdateMessage, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
@@ -125,7 +126,8 @@ import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
 import { initHost, isOmpHost } from "../src/omp/host.js";
-import { NATIVE_EVENT_CARD, POLL_RUN_CARD, emitDisplayCard, nativeEventSummary, pollRunSummary, registerCardRenderers } from "../src/omp/cards.js";
+import { NATIVE_EVENT_CARD, POLL_RUN_CARD, emitDisplayCard, nativeEventSummary, nativeStepMode, nativeStepTrace, pollRunSummary, registerCardContextFilter, registerCardRenderers } from "../src/omp/cards.js";
+import { NATIVE_STEPS_ROW_ID, nativeStepsPickerRows, nativeStepsSettingsRows, runStepsCommand } from "../src/omp/native-steps.js";
 import { ModelChangeTracker } from "../src/omp/model-change.js";
 import { showReport } from "../src/omp/report.js";
 import { isWorkerRealm, sessionKindOf, type SessionKind } from "../src/omp/runtime.js";
@@ -429,15 +431,23 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// the provider; /agy subagents renders it. In-memory, process-lifetime.
 	const roster = new SubagentRoster();
 	// ACP tool activity is display-only: durable cards with native-looking
-	// titles and optional diffs. Unlike a synthetic Pi toolCall this does not
-	// re-execute edits, park the turn, or add tool results to model context.
-	// Renderers and the per-host emit path live in src/omp/cards.ts.
-	if (engine === "acp") registerCardRenderers(pi);
+	// titles and optional diffs, or (acp.nativeSteps "inline", the OMP
+	// default) a trace line in the reply's thinking stream. Unlike a synthetic
+	// Pi toolCall this does not re-execute edits, park the turn, or add tool
+	// results to model context. Renderers, the per-host emit path and the
+	// trace format live in src/omp/cards.ts. Renderers stay registered in
+	// inline mode so cards saved earlier still draw on resume.
+	if (engine === "acp") {
+		registerCardRenderers(pi);
+		registerCardContextFilter(pi);
+	}
 	let pendingNativeTools = 0;
 	const pollRuns = new PollRunFolder();
-	const closePollRun = (): void => {
+	// Inline mode keeps poll runs to the live footer status: the polled call's
+	// result already arrives as a genuine Pi tool card.
+	const closePollRun = (mode?: NativeSteps): void => {
 		const settled = pollRuns.flush();
-		if (settled) emitDisplayCard(pi, POLL_RUN_CARD, settled, pollRunSummary(settled));
+		if (settled && (mode ?? nativeStepMode(loadConfig())) === "cards") emitDisplayCard(pi, POLL_RUN_CARD, settled, pollRunSummary(settled));
 		setDimStatus("agy-poll", undefined);
 	};
 	// Footer statuses render muted, matching pi-hostname's dim treatment.
@@ -446,18 +456,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (!ui) return;
 		ui.setStatus(key, text === undefined ? undefined : ui.theme.fg("dim", text));
 	};
-	const onNativeEvent = (event: NativeDisplayEvent): void => {
+	const onNativeEvent: NativeEventSink = (event) => {
 		if (engine !== "acp") return;
+		const mode = nativeStepMode(loadConfig());
 		// Polls are bridge-local (never get a genuine Pi card); the mcpServer
 		// tag is unreliable on these frames, so the tool name discriminates.
 		if (event.name === POLL_TOOL_NAME) {
 			const view = event.callId ? roundTrips.poll(event.callId) : undefined;
 			const { switched, live } = foldPollEvent(pollRuns, event, view, new Date());
-			if (switched) emitDisplayCard(pi, POLL_RUN_CARD, switched, pollRunSummary(switched));
+			if (switched && mode === "cards") emitDisplayCard(pi, POLL_RUN_CARD, switched, pollRunSummary(switched));
 			setDimStatus("agy-poll", live ? `♊︎ bridge_poll_result → ${live.target} (x${live.count})` : undefined);
 			return;
 		}
-		closePollRun();
+		closePollRun(mode);
 		if (/^pi-bridge(?:-\d+)?$/.test(event.mcpServer ?? "")) return;
 		// MCP calls through our own pi-bridge already have genuine Pi tool cards;
 		// only native Antigravity / other MCP events need display-only entries.
@@ -468,14 +479,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 		pendingNativeTools = Math.max(0, pendingNativeTools - 1);
 		if (pendingNativeTools === 0) setDimStatus("agy-native", undefined);
-		// Bound persisted session size; the ACP result and diff may be megabytes.
-		const card: NativeDisplayEvent = {
+		// Bound both paths: cards persist in the session, and inline traces sit
+		// in thinking that OMP replays as text to the next model after a switch.
+		// The ACP result and diff may be megabytes; diff-render caps lines, not width.
+		const bounded: NativeDisplayEvent = {
 			...event,
 			output: event.output?.slice(0, 4000),
 			diff: event.diff?.slice(0, 12000),
 			command: event.command?.slice(0, 500),
 		};
-		emitDisplayCard(pi, NATIVE_EVENT_CARD, card, nativeEventSummary(card));
+		if (mode === "inline") return nativeStepTrace(bounded);
+		emitDisplayCard(pi, NATIVE_EVENT_CARD, bounded, nativeEventSummary(bounded));
 	};
 	// Native re-exec only emits for builtins actually active in the session;
 	// anything else (or an unknown name) falls back to the wrapper card.
@@ -1362,6 +1376,7 @@ function settingsRows(ctx: AgyCommandCtx): string[] {
 		row("system prompt:", config.systemPrompt ? "on" : "off"),
 		// issue #23: unparseable hand-edited values must not fail silently.
 		...(config.parseWarnings ?? []).map((w, i) => row(i === 0 ? "config warnings:" : "", w)),
+		...nativeStepsSettingsRows(config, row),
 	];
 }
 
@@ -1376,7 +1391,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${configPath()}`,
 		"",
-		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy patch-cleanup, /agy clear, /agy doctor",
+		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy steps inline|cards, /agy timeout <1-1440|off>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
 }
 
@@ -1398,7 +1413,7 @@ function currentConversationId(ctx: AgyCommandCtx, cmdCtx: ExtensionCommandConte
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|readonly on|off|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|patch-cleanup|clear]",
+			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|readonly on|off|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|steps inline|cards|timeout <1-1440|off>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) ctx.setActiveUi(ui);
@@ -1916,6 +1931,10 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				}
 				return;
 			}
+			if (sub === "steps") {
+				runStepsCommand(val, ui);
+				return;
+			}
 			if (sub === "system-prompt") {
 				if (val === "on" || val === "off") {
 					const next = saveConfig({ systemPrompt: val === "on" });
@@ -2060,6 +2079,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			currentValue: config.systemPrompt ? "on" : "off",
 			values: ["on", "off"],
 		},
+		...nativeStepsPickerRows(config),
 		{
 			id: "acp-session-timeout",
 			label: "ACP session timeout (ms)",
@@ -2121,6 +2141,8 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 								...pending.acp,
 								sessionRetryOnTimeout: newValue === "on",
 							};
+						} else if (id === NATIVE_STEPS_ROW_ID) {
+							pending.acp = { ...pending.acp, nativeSteps: toNativeSteps(newValue) };
 						}
 					},
 				},
@@ -2177,6 +2199,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			pending.acp?.sessionRetryOnTimeout !== undefined
 				? `ACP session/new retry=${next.acp.sessionRetryOnTimeout ? "on" : "off"}`
 				: null,
+			pending.acp?.nativeSteps !== undefined ? `native steps=${next.acp.nativeSteps}` : null,
 		]
 			.filter(Boolean)
 			.join(", ");

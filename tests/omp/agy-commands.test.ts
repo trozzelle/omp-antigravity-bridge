@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import bridgeExtension from "../../extensions/index.js";
 import { __setHostForTests } from "../../src/omp/host.js";
-import { __resetRealmForTests } from "../../src/omp/runtime.js";
+import { __resetRealmForTests } from "../../src/runtime.js";
 
 const BOUND = "bound-conversation";
 const SESSION_ID = "session-under-test";
