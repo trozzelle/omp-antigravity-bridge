@@ -13,8 +13,9 @@ permissions:
   pull-requests: write
   checks: read
 
+# Shared with release.yml: both pick the next v<version>-omp.<N> tag.
 concurrency:
-  group: promote-sync
+  group: release
   cancel-in-progress: false
 
 env:

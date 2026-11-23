@@ -1,0 +1,131 @@
+name: Release
+
+# Releases every pull request merged into main, once CI has passed on the
+# merge commit. Upstream syncs keep their own path (promote-sync.yml): it
+# pushes main with GITHUB_TOKEN, which starts no CI run, so a promotion never
+# reaches this workflow, and sync/* heads are skipped here besides.
+#
+# workflow_run only fires for this file as it exists on main.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+# Shared with promote-sync.yml: both pick the next v<version>-omp.<N> tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Keep in step with ci.yml: the marketplace bundle is built and smoke-tested there.
+  BUN_VERSION: "1.4.5"
+  NODE_VERSION: "22"
+
+jobs:
+  release:
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0 # tags for the release number
+
+      - name: Configure git identity for the tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Decide whether this commit releases
+        id: decide
+        run: |
+          skip() { echo "Not releasing ${SHA}: $1"; echo "release=false" >>"$GITHUB_OUTPUT"; exit 0; }
+          git fetch --quiet --tags --force origin
+          main="$(git rev-parse origin/main)"
+          # A newer merge has its own CI run, and that release carries this commit too.
+          [ "$SHA" = "$main" ] || skip "main has moved on to ${main}"
+          existing="$(git tag -l 'v*-omp.*' --points-at "$SHA" | grep -v -- '-bundle$' | head -n 1 || true)"
+          [ -z "$existing" ] || skip "already released as ${existing}"
+
+          # The pull request this commit merged (merge, squash or rebase merge).
+          pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" \
+            --jq "[.[] | select(.merged_at != null and .base.ref == \"main\" and .merge_commit_sha == \"${SHA}\")][0] // empty")"
+          [ -n "$pr_json" ] || skip "not the merge of a pull request into main"
+          pr="$(jq -r '.number' <<<"$pr_json")"
+          head_ref="$(jq -r '.head.ref' <<<"$pr_json")"
+          case "$head_ref" in
+            sync/*) skip "#${pr} is an upstream sync; promote-sync.yml releases those" ;;
+          esac
+          if jq -e 'any(.labels[]; .name == "skip-release")' <<<"$pr_json" >/dev/null; then
+            skip "#${pr} is labelled skip-release"
+          fi
+
+          # v<upstream-version>-omp.<N>; N counts releases per upstream version.
+          pkg_version="$(node -p 'require("./package.json").version')"
+          version="${pkg_version%-omp}"
+          [ "$version" != "$pkg_version" ] ||
+            { echo "::error::package.json version $pkg_version lacks the -omp suffix"; exit 1; }
+          last="$(git tag -l "v${version}-omp.*" | sed -n "s/^v${version//./\\.}-omp\.\([0-9][0-9]*\)$/\1/p" | sort -n | tail -n 1)"
+          tag="v${version}-omp.$(( ${last:-0} + 1 ))"
+
+          # Release notes: the merged pull request's title, read here from the
+          # API response rather than interpolated into a script.
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "$(jq -r '.title' <<<"$pr_json") (#${pr})"
+            echo
+            echo "Install: \`omp plugin install github:${GITHUB_REPOSITORY}#${tag}\` (or \`#latest\`)."
+          } >"$notes"
+
+          {
+            echo "release=true"
+            echo "tag=$tag"
+            echo "pr=$pr"
+            echo "notes=$notes"
+          } >>"$GITHUB_OUTPUT"
+          echo "Releasing #${pr} (${SHA}) as ${tag}"
+
+      - name: Tag the release and move latest
+        if: steps.decide.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          git tag -a "$TAG" -m "$TAG" "$SHA"
+          # `latest` follows the newest release; `omp plugin upgrade` re-resolves it.
+          git tag -f -a latest -m "latest: $TAG" "$SHA"
+          git push --atomic origin "refs/tags/${TAG}" "+refs/tags/latest"
+
+      - name: Publish the GitHub release
+        if: steps.decide.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
+          NOTES: ${{ steps.decide.outputs.notes }}
+        run: gh release create "$TAG" --verify-tag --latest --title "$TAG" --notes-file "$NOTES"
+
+      - uses: actions/setup-node@v7
+        if: steps.decide.outputs.release == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.decide.outputs.release == 'true'
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Publish the marketplace bundle and catalog
+        if: steps.decide.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          # Pushes <tag>-bundle (the release commit plus a prebuilt bundle) and
+          # attaches marketplace.json to the release; main is not touched.
+          bash scripts/omp/marketplace-release.sh "$TAG" --push

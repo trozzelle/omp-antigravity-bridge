@@ -40,3 +40,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: show agy's native ACP steps as trace lines in the reply's thinking, in order, instead of cards OMP queues below the finished reply; `acp.nativeSteps` / `AGY_NATIVE_STEPS` / `/agy steps inline|cards` keeps cards available (cards)
 - omp: keep native-event and poll-run card messages out of the model's context; OMP sends custom messages as developer messages regardless of `excludeFromContext` (cards)
 - omp: rebase onto upstream 1.13.3: the prompt reads upstream's trailing user run with OMP developer messages and summaries, and the activate_skill catalog tolerates a host without a command list (sync)
+- omp: release every pull request merged into main once CI passes on the merge commit, with the next `v<version>-omp.<N>` tag, `latest`, a GitHub release and the marketplace bundle; `skip-release` opts a pull request out (release)
