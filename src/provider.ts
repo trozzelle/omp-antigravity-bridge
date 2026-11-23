@@ -521,6 +521,14 @@ export interface NativeDisplayEvent {
 	diff?: string;
 }
 
+/** Receives every ACP native tool event (started, completed, failed). Text
+ *  it returns is appended to the reply's thinking stream at the step's
+ *  position. Returning nothing adds nothing: the sink drew the step itself
+ *  or chose not to show it; the provider does not tell the two apart. A
+ *  completed or failed event the sink took never falls back to the
+ *  provider's own thinking label (only a throwing sink does). */
+export type NativeEventSink = (event: NativeDisplayEvent) => string | void;
+
 export interface StreamSimpleDeps {
 	entries: AgyModelEntry[];
 	store: SessionStore;
@@ -544,9 +552,9 @@ export interface StreamSimpleDeps {
 	 *  read decides (tests); production wiring always passes it so a
 	 *  mid-session config flip cannot move one side of a parked turn. */
 	engine?: "stream-json" | "acp";
-	/** Output-only ACP tool events; persisted as TUI entries, never sent to
-	 *  Antigravity or dispatched through Pi's executable tools. */
-	onNativeEvent?: (event: NativeDisplayEvent) => void;
+	/** Output-only ACP tool events: display cards or inline thinking traces,
+	 *  never sent to Antigravity or dispatched through Pi's executable tools. */
+	onNativeEvent?: NativeEventSink;
 	/** agy backgrounded native work this turn (see DriverDeps). */
 	onNativeBackground?: (info: { conversationId: string; turnStartMs: number }) => void;
 	/** Subagent roster (both engines); folded from every activity. */
@@ -1254,7 +1262,7 @@ export interface DriverDeps {
 	roundTrips: ToolRoundTrips;
 	replay?: WrapperReplay;
 	nativeActive?: (name: string) => boolean;
-	onNativeEvent?: (event: NativeDisplayEvent) => void;
+	onNativeEvent?: NativeEventSink;
 	/** agy backgrounded native work this turn (WaitMsBeforeAsync arg seen).
 	 *  Fired once at the settled OK end of the turn so the extension can arm
 	 *  its task watcher (src/background-watch.ts); never on abort or error. */
@@ -1279,7 +1287,7 @@ export interface ActivityFeatures {
 	nativeActive?: (name: string) => boolean;
 	roundTrips?: ToolRoundTrips;
 	engine?: "stream-json" | "acp";
-	onNativeEvent?: (event: NativeDisplayEvent) => void;
+	onNativeEvent?: NativeEventSink;
 	/** Set by runTurnDriver: latches the background arg shape for the arm
 	 *  decision at turn end. */
 	onBackgroundArg?: (args: Record<string, unknown>) => void;
@@ -1373,7 +1381,8 @@ export function consumeActivity(
 			// model-facing result is produced. Persist a card only on completion.
 			if (feats.engine === "acp" && feats.onNativeEvent) {
 				try {
-					feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "started", callId: callIdArg(activity.args) });
+					const inline = feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "started", callId: callIdArg(activity.args) });
+					if (inline) appendThinking(stream, blocks, inline);
 				} catch { /* UI failure must not fail the generation. */ }
 			}
 			if (looksBackgroundNativeCall(activity.args)) feats.onBackgroundArg?.(activity.args);
@@ -1401,13 +1410,15 @@ export function consumeActivity(
 					diffText = diffCtx.diffEdit(file, disk).text;
 				}
 				const command = ["CommandLine", "command_line", "command"].map((k) => activity.args[k]).find((v): v is string => typeof v === "string" && v.length > 0);
+				let inline: string | void = undefined;
 				let displayed = false;
 				try {
 					if (feats.onNativeEvent) {
-						feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "completed", path: file, command, output: activity.output, diff: diffText, callId: callIdArg(activity.args) });
+						inline = feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "completed", path: file, command, output: activity.output, diff: diffText, callId: callIdArg(activity.args) });
 						displayed = true;
 					}
 				} catch { /* A stale renderer must never fail the model turn. */ }
+				if (inline) appendThinking(stream, blocks, inline);
 				if (displayed) return "continue";
 				if (file) {
 					appendThinking(stream, blocks, `[agy edit: ${path.basename(file)}]\n`);
@@ -1472,7 +1483,8 @@ export function consumeActivity(
 		case "tool_error":
 			if (feats.engine === "acp" && feats.onNativeEvent) {
 				try {
-					feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "failed", output: activity.message, callId: activity.args ? callIdArg(activity.args) : undefined });
+					const inline = feats.onNativeEvent({ name: activity.name, mcpServer: activity.mcpServer, status: "failed", output: activity.message, callId: activity.args ? callIdArg(activity.args) : undefined });
+					if (inline) appendThinking(stream, blocks, inline);
 					return "continue";
 				} catch { /* Fall back to a thinking label. */ }
 			}
