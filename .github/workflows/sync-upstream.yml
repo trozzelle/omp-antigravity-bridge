@@ -31,13 +31,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: main
-          fetch-depth: 0 # the rebase and the split comparison need full history
+          fetch-depth: 0 # the merge and the split comparison need full history
 
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
-      - name: Configure git identity for the rebase
+      - name: Configure git identity for the merge
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -61,16 +61,16 @@ jobs:
         env:
           SHA: ${{ steps.sync.outputs.sha }}
           UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
-          FAILING: ${{ steps.sync.outputs.failing_commit }}
+          FORK_COMMITS: ${{ steps.sync.outputs.fork_commits }}
           FILES: ${{ steps.sync.outputs.conflict_files }}
         run: |
           title="Upstream sync conflict at ${SHA}"
           body="$RUNNER_TEMP/issue.md"
           {
-            echo "Rebasing \`main\` onto upstream \`${UPSTREAM_SHA}\` stopped on a patch commit."
+            echo "Merging upstream \`${UPSTREAM_SHA}\` into \`main\` stopped on a conflict."
             echo
-            echo "- Failing patch commit: \`${FAILING}\`"
             echo "- Conflicted files: \`${FILES}\`"
+            echo "- Fork commits since the last sync that touched them: ${FORK_COMMITS:-none}"
             echo "- Run: ${RUN_URL}"
             echo
             echo "Resolve locally:"
@@ -79,15 +79,13 @@ jobs:
             echo "git fetch origin && git switch main && git reset --hard origin/main"
             echo "git branch -f upstream origin/upstream"
             echo "bash scripts/omp/sync-upstream.sh   # reproduces the conflict and fast-forwards upstream"
-            echo "git switch -c sync/${SHA} main && git rebase upstream"
-            echo "# fix the patch commit, git rebase --continue, then run the checks and:"
+            echo "git switch -c sync/${SHA} main && git merge upstream"
+            echo "# resolve, git commit, run the checks, then:"
             echo "git push origin upstream sync/${SHA}"
             echo '```'
             echo
             echo "Then run the **Sync upstream** workflow (or wait for the next scheduled run). It finds the pushed"
-            echo "\`sync/${SHA}\`, opens its pull request with the \`omp-sync main-base\` marker set to the current"
-            echo "\`origin/main\`, dispatches CI on it and closes this issue. Promotion only works while \`main\` still"
-            echo "equals that marker; if \`main\` moves first, repeat these steps from a fresh \`origin/main\`."
+            echo "\`sync/${SHA}\`, opens its pull request, dispatches CI on it and closes this issue."
           } >"$body"
           existing="$(gh issue list --state open --limit 100 --json number,title \
             --jq '.[] | select(.title | startswith("Upstream sync conflict at ")) | .number' | head -n 1)"
@@ -97,7 +95,7 @@ jobs:
           else
             gh issue create --title "$title" --body-file "$body"
           fi
-          echo "::error::Upstream sync conflict at ${SHA}: ${FAILING}"
+          echo "::error::Upstream sync conflict at ${SHA} in ${FILES}"
           exit 1
 
       - name: Push upstream and the sync branch
@@ -109,8 +107,8 @@ jobs:
           git push --force origin "${BRANCH}"
 
       # "pending" means origin/sync/<sha> already exists (for example a conflict resolved by hand and
-      # pushed). It gets the same pull request, main-base marker (current origin/main) and CI dispatch
-      # as a freshly built branch, unless a pull request is already open for it.
+      # pushed). It gets the same pull request and CI dispatch as a freshly built branch, unless a pull
+      # request is already open for it.
       - name: Open or update the sync pull request
         id: pr
         if: steps.sync.outputs.status == 'synced' || steps.sync.outputs.status == 'pending'
@@ -121,22 +119,22 @@ jobs:
           UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
           VERSION: ${{ steps.sync.outputs.upstream_version }}
           BASE_VERSION: ${{ steps.sync.outputs.base_version }}
-          MAIN_SHA: ${{ steps.sync.outputs.main_sha }}
+          BASE_SHA: ${{ steps.sync.outputs.base_sha }}
           SYNC_OUT_DIR: ${{ runner.temp }}/omp-sync
         run: |
           title="sync: upstream ${VERSION} (${SHA})"
           body="$RUNNER_TEMP/pr.md"
           {
-            echo "<!-- omp-sync main-base=${MAIN_SHA} upstream=${UPSTREAM_SHA} -->"
-            echo "Upstream \`${UPSTREAM_SHA}\` (${BASE_VERSION} → ${VERSION}) with the OMP patch stack rebased on top."
+            echo "<!-- omp-sync upstream=${UPSTREAM_SHA} -->"
+            echo "Merges upstream \`${UPSTREAM_SHA}\` (${BASE_VERSION} → ${VERSION}) into \`main\`."
             echo
-            echo "Patch commits:"
+            echo "**Merge with a merge commit**, not squash or rebase: the next sync needs \`main\` to contain"
+            echo "\`upstream\`. Merging releases it like any other pull request (see the Release workflow)."
+            echo "Before merging, run \`bash scripts/omp/smoke-live.sh\` locally on this branch."
             echo
-            git log --reverse --format="- \`%h\` %s" "upstream..origin/${BRANCH}"
+            echo "Upstream commits:"
             echo
-            echo "Checks: the CI workflow runs on this branch (see the checks below)."
-            echo "Before promoting, run \`bash scripts/omp/smoke-live.sh\` locally on this branch."
-            echo "Promote with the **Promote sync** workflow (input: \`${BRANCH}\`); do not merge this PR."
+            git log --reverse --format="- \`%h\` %s" "${BASE_SHA}..upstream"
             echo
             echo "## Upstream changelog"
             echo
