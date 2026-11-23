@@ -38,3 +38,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: publish an OMP marketplace catalog and a self-contained bundle with each release, so `omp plugin upgrade` picks up new releases (release)
 - omp: point installs at the trozzelle/omp-plugins marketplace (docs)
 - omp: replace upstream's README with a distilled OMP README; the sync keeps the fork's README and flags upstream doc changes (docs)
+- omp: rewrite the README in plain prose, correct `AGY_EXTRA_ARGS` (it applies to `AskAntigravity` runs only) and document the agy version floors, setting values and `/agy` commands (docs)

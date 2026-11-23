@@ -1,25 +1,29 @@
 # omp-antigravity-bridge
 
-Gemini models in [OMP (oh-my-pi)](https://github.com/can1357/oh-my-pi), powered by Google's official Antigravity CLI (`agy`) on your Antigravity subscription. It adds:
+Use Gemini models in [OMP (oh-my-pi)](https://github.com/can1357/oh-my-pi) through Google's official Antigravity CLI (`agy`), on your Antigravity subscription.
 
-- an `antigravity` provider: `antigravity/gemini-*` models in `/model`, streaming, multi-turn;
-- a tool bridge, so agy can call your OMP tools (extensions, MCP servers, other `Ask*` delegations);
-- the `AskAntigravity` tool, so any model can delegate a one-shot question to Gemini;
-- an optional approval gate in front of agy's own commands and file writes.
+The plugin adds:
 
-This is an OMP port of [`@estebanforge/pi-antigravity-bridge`](https://github.com/EstebanForge/pi-extensions/tree/main/packages/pi-antigravity-bridge) for [pi](https://github.com/earendil-works/pi). It tracks upstream and carries a small set of compatibility patches. Where OMP behaves differently from pi, see [docs/OMP.md](docs/OMP.md).
+- `antigravity/gemini-*` models in `/model`, with streaming and multi-turn conversations.
+- A tool bridge, so agy can call your OMP tools: extensions, MCP servers and other `Ask*` delegation tools.
+- The `AskAntigravity` tool, so any model can put a one-off question to Gemini.
+- An optional approval gate in front of the commands agy runs and the files it writes.
+
+This is an OMP port of [`@estebanforge/pi-antigravity-bridge`](https://github.com/EstebanForge/pi-extensions/tree/main/packages/pi-antigravity-bridge) for [pi](https://github.com/earendil-works/pi). It tracks upstream and carries a small set of compatibility patches. [docs/OMP.md](docs/OMP.md) covers where it behaves differently from the pi version.
+
+It uses your own Google account, so read the [terms of service](#terms-of-service) note before you install.
 
 ## Requirements
 
 - OMP 19.1 or newer.
-- The `agy` CLI, installed and signed in:
+- The `agy` CLI, installed and signed in. The default engine needs agy 1.5.3 or newer (`agy update` upgrades an older install).
 
   ```bash
   curl -fsSL https://antigravity.google/cli/install.sh | bash   # Windows: irm https://antigravity.google/cli/install.ps1 | iex
   agy                                                           # once, to complete Google sign-in
   ```
 
-  If `agy` is missing, the bridge offers to run Google's installer on first interactive start. It looks for `agy` on `PATH`, or at `AGY_BIN`.
+  If `agy` is missing, the plugin offers to run Google's installer when you start OMP interactively. It looks for `agy` on `PATH`, or at `AGY_BIN`.
 
 Tested with OMP 19.1.0 and agy 1.5.14.
 
@@ -32,7 +36,7 @@ omp plugin marketplace add trozzelle/omp-plugins
 omp plugin install omp-antigravity-bridge@trozzelle
 ```
 
-Update with `omp plugin upgrade`. OMP re-checks the catalog once it is a day old; `omp plugin marketplace update trozzelle` checks right away. New releases reach the marketplace within six hours. Each release also publishes its catalog as a release asset, which works as a marketplace source on its own (`omp plugin marketplace add https://github.com/trozzelle/omp-antigravity-bridge/releases/latest/download/marketplace.json`); both are named `trozzelle`, so add only one.
+Update with `omp plugin upgrade`. New releases reach the marketplace within six hours, and OMP re-checks the catalog once it is a day old. To check right away, run `omp plugin marketplace update trozzelle`.
 
 Or straight from git:
 
@@ -41,11 +45,11 @@ omp plugin install github:trozzelle/omp-antigravity-bridge#latest   # follow rel
 omp plugin install github:trozzelle/omp-antigravity-bridge#v1.13.1-omp.5   # or pin one release
 ```
 
-Releases are tagged `v<upstream-version>-omp.<N>` and listed on the [Releases](https://github.com/trozzelle/omp-antigravity-bridge/releases) page. Don't install from `main`; its history is rewritten on every upstream sync.
+Releases are tagged `v<upstream-version>-omp.<N>` and listed on the [Releases](https://github.com/trozzelle/omp-antigravity-bridge/releases) page. Don't install from `main`, because every upstream sync rewrites its history.
 
 ## Usage
 
-Pick a model in `/model` (look for `antigravity`), or pass it on the command line:
+Pick an `antigravity` model in `/model`, or pass one on the command line:
 
 ```bash
 omp --model antigravity/gemini-4-hydrogen
@@ -53,82 +57,108 @@ omp --model antigravity/gemini-3-8-flash:low   # thinking level via OMP's :level
 omp models find antigravity                    # the models your account offers
 ```
 
-Model ids come from `agy models` without the thinking tier. The list is read when OMP starts; restart OMP after `agy update` to refresh it.
+Model ids come from `agy models`, without the thinking tier. OMP reads the list at startup, so restart it after `agy update`.
 
-Turns run inside agy's own agent loop, in your workspace, on your subscription quota. OMP shows live token usage and zero cost. agy remembers the conversation, so each turn sends only your new message plus any OMP-side context it hasn't seen yet (for example a compaction summary or turns from another model).
+Each turn runs inside agy's own agent loop, in your workspace, on your subscription quota. OMP shows live token usage and zero cost. agy remembers the conversation, so each turn sends only your new message plus any OMP-side context it hasn't seen yet, such as a compaction summary or turns from another model.
 
 ### Engines
 
 | Engine | What it is | Notes |
 | --- | --- | --- |
-| `acp` (default) | `agy acp`, JSON-RPC over stdio | Exact token usage; agy's own tool steps appear as cards in the transcript |
-| `stream-json` | A persistent `agy` CLI process | Fallback; agy's read-only steps re-run as native OMP `read`/`glob`/`grep` cards |
+| `acp` (default) | `agy acp`, JSON-RPC over stdio | Exact token usage. agy's own tool steps appear as cards in the transcript. |
+| `stream-json` | A persistent `agy` CLI process | The fallback. agy's read-only steps re-run as native OMP `read`/`glob`/`grep` cards. |
 
-Both use the same `agy` install and sign-in. Switch with `/agy engine acp|stream-json` and restart OMP. Details: [docs/ENGINES.md](docs/ENGINES.md).
+Both use the same `agy` install and sign-in. To switch, run `/agy engine acp|stream-json` and restart OMP. Details: [docs/ENGINES.md](docs/ENGINES.md).
 
 ### Tool bridge
 
-While an Antigravity model is active, agy reaches your OMP tools through a local MCP server inside OMP (bound to `127.0.0.1`, protected by a per-session token). The calls run in OMP's own tool loop, so they get OMP's normal cards, approvals and hooks. Calls that take longer than about 20 seconds come back as a handle that agy polls; they can run for up to 30 minutes. agy also gets an `activate_skill` tool for your skills.
+While an Antigravity model is active, agy can call your OMP tools through a local MCP server inside OMP (bound to `127.0.0.1`, protected by a per-session token). The calls run in OMP's own tool loop, so they get OMP's normal cards, approvals and hooks. A call that takes longer than about 20 seconds returns a handle that agy polls, and it can run for up to 30 minutes. agy also gets an `activate_skill` tool for your skills.
 
-`/agy bridge all|mcp|none` controls what is exposed (default `all`). `/agy tools hide <name>` hides individual tools for the session. Exposing other delegation tools (`AskClaude`, …) lets agy fan out to other models and costs accordingly.
+`/agy bridge all|mcp|none` sets what agy can see: all of them (the default), only MCP tools and skills, or none. `/agy tools hide <name>` hides one tool for the session. If agy can see other delegation tools such as `AskClaude`, it can hand work to other models, and you pay for those calls.
 
 ### AskAntigravity
 
-Any model can call `AskAntigravity` to hand Gemini a one-shot question. It runs a separate `agy -p` process (default model `gemini-4-hydrogen`, thinking `medium`; change with `/agy model` and `/agy thinking`). With `background: true` the call returns at once and the answer arrives later as a message; `/agy-stop` cancels a background run. Background runs aren't available in `-p` print mode.
+Any model can call `AskAntigravity` to ask Gemini a one-off question. Each call runs a separate `agy -p` process, by default with model `gemini-4-hydrogen` and thinking `medium`. Change the defaults with `/agy model` and `/agy thinking`.
+
+With `background: true` the call returns at once and the answer arrives later as a message. `/agy-stop` cancels a background run. Background runs aren't available in `-p` print mode.
 
 ### Approval gate
 
-agy runs commands and edits files with its own tools, outside OMP's tools. Run OMP in any approval mode other than yolo and the gate turns on: each agy command or file write first becomes an OMP approval prompt showing the command, or the file and its diff. Your `tools.approval` policies for `bash`/`write`/`edit` and your restricted folders apply. `AGY_APPROVALS_MODE=allow|deny` forces a decision. Read-only agy tools are never gated.
+agy runs commands and edits files with its own tools, outside OMP's. The approval gate brings them under OMP's approval mode: in any mode other than `yolo`, each agy command or file write first becomes an OMP approval prompt showing the command, or the file and its diff.
 
 ```bash
 omp --approval-mode always-ask --model antigravity/gemini-4-hydrogen
 ```
 
-Without the gate, agy runs commands without asking, like every other tool in a yolo-mode OMP session. agy's plan mode can't enforce review-only turns ([antigravity-cli#1181](https://github.com/google-antigravity/antigravity-cli/issues/1181)). For a hard stop use `/agy readonly on`: every Antigravity turn and `AskAntigravity` call is refused.
+Your `tools.approval` policies for `bash`, `write` and `edit` apply, and so do your restricted folders. `AGY_APPROVALS_MODE=allow|deny` forces a decision. agy's read-only tools are never gated.
+
+Whether the gate is on is decided when a session starts, so start a new session after you change OMP's approval mode. On the ACP engine it is verified only with agy 1.5.12 or newer; `/agy doctor` warns about older versions. Full rules: [docs/OMP.md](docs/OMP.md#approval-gate).
+
+Without the gate, agy runs commands without asking, like every other tool in a yolo-mode OMP session. agy's plan mode can't enforce review-only turns ([antigravity-cli#1181](https://github.com/google-antigravity/antigravity-cli/issues/1181)). For a hard stop use `/agy readonly on`, which refuses every Antigravity turn and `AskAntigravity` call.
 
 ### Web tools
 
-`/agy web on` registers `agy_web_search` for any model. Each call spawns a search-only agy run and uses Antigravity quota. `agy_read_url` is registered too, but agy 1.5.14 never offers its URL-read tool to these runs, so it refuses rather than return unverified text. Use OMP's own `read` for URLs.
+`/agy web on` registers `agy_web_search` for any model. It exists for your other models, since Antigravity models can already search the web. Each call starts a search-only agy run and uses Antigravity quota.
+
+`agy_read_url` is registered too, but agy 1.5.14 never offers its URL reader to these runs, so the tool refuses to return text it can't verify. Use OMP's own `read` for URLs.
 
 ## Configuration
 
-`/agy` opens the settings picker. Settings are saved to `~/.omp/agent/antigravity-bridge/config.json` and apply on the next turn; environment variables override the file.
+`/agy` opens the settings picker. Settings are saved to `~/.omp/agent/antigravity-bridge/config.json` and apply on the next turn unless noted. Environment variables override the file.
 
-| Command | Setting | Default | Env |
+| Setting | Default | Command | Env |
 | --- | --- | --- | --- |
-| `/agy engine acp\|stream-json` | `engine` (restart to apply) | `acp` | `AGY_ENGINE` |
-| `/agy bridge all\|mcp\|none` | `bridgeTools` | `all` | `AGY_BRIDGE_TOOLS` |
-| `/agy ask on\|off` | `askTool` | `on` | `AGY_ASK_TOOL` |
-| `/agy web on\|off` | `webTools` (applies after restarting OMP) | `off` | `AGY_WEB_TOOLS` |
-| `/agy digest on\|off` | `digest`: send OMP-side context agy hasn't seen | `on` | `AGY_DIGEST` |
-| `/agy system-prompt on\|off` | `systemPrompt`: send your context files, skills list and append prompt to new agy conversations | `on` | `AGY_SYSTEM_PROMPT` |
-| `/agy readonly on\|off` | `readOnly`: refuse every turn | `off` | `AGY_READONLY` |
-| `/agy permissions on\|off` | `skipPermissions`: auto-approve agy's own permission prompts (needed headless) | `on` | `AGY_SKIP_PERMISSIONS` |
-| `/agy timeout <1-1440\|off>` | `turnTimeoutMin`: cap on one turn; pauses while tools run | `0` in the TUI, `20` headless | `AGY_TURN_TIMEOUT_MIN` |
-| | `inactivityTimeoutMin`: fail a turn after this much silence | `5` | `AGY_INACTIVITY_TIMEOUT_MIN` |
-| `/agy model flash\|pro\|gemini` | `AskAntigravity` default model (an alias or an exact id) | `gemini-4-hydrogen` | `AGY_DEFAULT_MODEL` |
-| `/agy thinking low\|medium\|high` | `AskAntigravity` default thinking | `medium` | `AGY_DEFAULT_THINKING` |
-| | `approvals.gateMode`: `auto`, `dedicated`, `off` | `auto` | `AGY_APPROVALS` |
-| | `approvals.mode`: `inherit`, `ask`, `allow`, `deny` | `inherit` | `AGY_APPROVALS_MODE` |
+| `engine` (restart to apply) | `acp` | `/agy engine acp\|stream-json` | `AGY_ENGINE` |
+| `bridgeTools` | `all` | `/agy bridge all\|mcp\|none` | `AGY_BRIDGE_TOOLS` |
+| `askTool` (restart to apply) | `on` | `/agy ask on\|off` | `AGY_ASK_TOOL` |
+| `webTools` (restart to apply) | `off` | `/agy web on\|off` | `AGY_WEB_TOOLS` |
+| `digest`: send OMP-side context agy hasn't seen | `on` | `/agy digest on\|off` | `AGY_DIGEST` |
+| `systemPrompt`: send your context files, skills list and appended system prompt to new agy conversations | `on` | `/agy system-prompt on\|off` | `AGY_SYSTEM_PROMPT` |
+| `readOnly`: refuse every turn | `off` | `/agy readonly on\|off` | `AGY_READONLY` |
+| `skipPermissions`: auto-approve agy's own permission prompts (needed headless) | `on` | `/agy permissions on\|off` | `AGY_SKIP_PERMISSIONS` |
+| `turnTimeoutMin`: cap on one turn, in minutes; pauses while OMP tools run | `0` (no cap) in the TUI, `20` headless | `/agy timeout <1-1440\|off>` | `AGY_TURN_TIMEOUT_MIN` |
+| `inactivityTimeoutMin`: fail a turn after this many minutes of silence | `5` | | `AGY_INACTIVITY_TIMEOUT_MIN` |
+| `defaultModel`: the `AskAntigravity` model, as an alias or an exact id | `gemini-4-hydrogen` | `/agy model flash\|pro\|gemini` | `AGY_DEFAULT_MODEL` |
+| `defaultThinking`: the `AskAntigravity` thinking level | `medium` | `/agy thinking low\|medium\|high` | `AGY_DEFAULT_THINKING` |
+| `approvals.gateMode`: `auto` (follow OMP's approval settings), `dedicated` (always on), `off` | `auto` | | `AGY_APPROVALS` |
+| `approvals.mode`: `inherit` (OMP's approval mode decides), `ask`, `allow`, `deny` | `inherit` | | `AGY_APPROVALS_MODE` |
 
-Other commands: `/agy doctor` (health, versions, bridge port, log directory), `/agy auth`, `/agy clear` (start fresh agy conversations), `/agy tools [hide|show <name>|reset]`, `/agy quota`, `/agy subagents`, `/agy tasks [tail <id>]`, `/agy artifacts [open <n>]`, `/agy agent <name|off>` (stream-json only).
+Other commands:
 
-Less common environment variables: `AGY_BIN` (path to `agy`), `AGY_EXTRA_ARGS` (extra arguments for every agy invocation), `AGY_DEBUG` (full debug log), `AGY_ACP_SESSION_TIMEOUT_MS`.
+| Command | What it does |
+| --- | --- |
+| `/agy doctor` | Health, versions, bridge port, log directory |
+| `/agy auth` | How to sign in to agy |
+| `/agy clear` | Start fresh agy conversations |
+| `/agy tools [hide\|show <name>\|reset]` | List the bridged tools; hide or restore one for the session |
+| `/agy quota` | Your Antigravity quota |
+| `/agy subagents` | Subagents agy spawned this session |
+| `/agy tasks [tail <id>]` | agy's background tasks; `tail` shows the end of a task's log |
+| `/agy artifacts [open <n\|name>]` | Files agy generated or received; `open` opens one |
+| `/agy agent <name\|off>` | Use a custom agy agent (stream-json only) |
+
+Less common environment variables: `AGY_BIN` (path to `agy`), `AGY_EXTRA_ARGS` (extra arguments for `AskAntigravity` runs), `AGY_DEBUG` (full debug log), `AGY_ACP_SESSION_TIMEOUT_MS` (ACP session timeout, default `20000`).
 
 ## Troubleshooting
 
-- Run `/agy doctor` first. In `-p` print mode it writes the report to stdout.
-- Logs: `~/.omp/extensions-data/estebanforge/pi-antigravity-bridge/logs/<date>.ndjson`. Only errors are written by default; start OMP with `AGY_DEBUG=1` for the full trail. Prompts, tool arguments and tool output never go into the log, and secret-shaped values are redacted. Files older than 14 days are deleted.
-- `antigravity/*` models missing: check `agy models` works in a terminal, then restart OMP. If agy can't be reached at startup, a fallback model list is shown, and turns fail with a clear error.
+Run `/agy doctor` first. In `-p` print mode it writes the report to stdout.
+
+- `antigravity/*` models are missing: check that `agy models` works in a terminal, then restart OMP. If the plugin can't reach agy at startup, it shows a fallback model list and turns fail with a clear error.
 - "agy CLI is not installed": install agy, or point `AGY_BIN` at it.
+
+Logs are in `~/.omp/extensions-data/estebanforge/pi-antigravity-bridge/logs/<date>.ndjson`. Only errors are written by default; start OMP with `AGY_DEBUG=1` for the full trail. Prompts, tool arguments and tool output never go into the log, values that look like secrets are redacted, and files older than 14 days are deleted. Attach the last day or two of logs when you [open an issue](https://github.com/trozzelle/omp-antigravity-bridge/issues).
 
 ## Terms of service
 
-Google's [Antigravity terms](https://antigravity.google/terms) prohibit using the service "in connection with products not provided by us"; Google's enforcement so far targeted tools that reuse Antigravity credentials against Google's backend. This plugin doesn't do that. It runs the official, unmodified `agy` binary as a subprocess, which signs in and talks to Google itself; the plugin never sees your token and only reads agy's local output. The wording is still broad and Google can suspend accounts at its discretion. Use it with your own account at your own risk. This is not legal advice.
+Google's [Antigravity terms](https://antigravity.google/terms) prohibit using the service "in connection with products not provided by us". Google's enforcement so far has targeted tools that reuse Antigravity credentials to call its backend directly.
+
+This plugin doesn't do that. It runs the official, unmodified `agy` binary as a subprocess. agy signs in and talks to Google itself, and the plugin only reads what agy outputs locally. It never sees your token.
+
+The wording is still broad, and Google can suspend accounts at its discretion. Use the plugin with your own account at your own risk. This is not legal advice.
 
 ## Development
 
-`main` is upstream's code (branch `upstream`) plus a stack of `omp:` commits. A weekly workflow rebases the stack onto new upstream releases and opens a pull request; promoting it tags a release, publishes the marketplace bundle and moves `latest`. Patch conventions and host details: [.omp/AGENTS.md](.omp/AGENTS.md). Changes this fork carries: [CHANGELOG-OMP.md](CHANGELOG-OMP.md). Upstream's own README, written for pi: [upstream branch](https://github.com/trozzelle/omp-antigravity-bridge/blob/upstream/README.md).
+`main` is upstream's code (the `upstream` branch) plus a stack of `omp:` commits. A weekly workflow rebases the stack onto new upstream releases and opens a pull request. Promoting it tags a release, publishes the marketplace bundle and moves `latest`.
 
 ```bash
 npm install
@@ -136,6 +166,8 @@ npm run typecheck && npm test && npm run test:bun
 npm run smoke:omp                 # loads the extension in a real omp
 bash scripts/omp/smoke-live.sh    # end-to-end checks; needs a signed-in agy, uses a little quota
 ```
+
+Patch conventions and OMP host details are in [.omp/AGENTS.md](.omp/AGENTS.md), and [CHANGELOG-OMP.md](CHANGELOG-OMP.md) lists the changes this fork carries. Upstream's own README, written for pi, is on the [upstream branch](https://github.com/trozzelle/omp-antigravity-bridge/blob/upstream/README.md).
 
 ## License
 
