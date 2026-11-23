@@ -159,7 +159,7 @@ The wording is still broad, and Google can suspend accounts at its discretion. U
 
 ## Development
 
-`main` is upstream's code (the `upstream` branch) plus a stack of `omp:` commits. A weekly workflow rebases the stack onto new upstream releases and opens a pull request. Promoting it tags a release, publishes the marketplace bundle and moves `latest`.
+`main` is upstream's code (the `upstream` branch) plus a stack of `omp:` commits. A weekly workflow rebases the stack onto new upstream releases and opens a pull request. Promoting it tags a release, publishes the marketplace bundle and moves `latest`. Every other pull request merged into `main` is released the same way once CI passes on the merge commit; label a pull request `skip-release` to merge it without one.
 
 ```bash
 npm install
