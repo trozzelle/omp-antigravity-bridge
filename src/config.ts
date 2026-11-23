@@ -58,6 +58,22 @@ export type BridgeTools = "none" | "mcp" | "all";
  *  "off": keep zero-usage. Real server usage (usageSeen latch) always wins. */
 export type UsageEstimate = "estimate" | "direct" | "off";
 
+/** OMP only: where ACP native tool steps (agy's own read_file, run_command,
+ *  edits) show. "inline" (default): one trace line per step (plus edit
+ *  diffs) in the reply's thinking stream, in the order the steps ran.
+ *  "cards": separate display cards; OMP queues a custom message sent
+ *  mid-reply as steering, so they land below the finished answer. pi always
+ *  draws cards (the key is absent there). */
+export type NativeSteps = "inline" | "cards";
+
+/** Narrow a raw nativeSteps value (file, env, picker) to the known set,
+ *  case-insensitive; anything else is undefined. Shared by loadConfig and
+ *  saveConfig so the two can never drift. */
+export function toNativeSteps(raw: unknown): NativeSteps | undefined {
+	const value = typeof raw === "string" ? raw.toLowerCase() : undefined;
+	return value === "inline" || value === "cards" ? value : undefined;
+}
+
 /** How the approval gate activates (docs/TODO.md section 2.5).
  *
  *  "auto" (default): OFF until a third-party pi permission extension is
@@ -104,6 +120,10 @@ export interface AcpConfig {
 	 *  recover if the server process itself has a wedged socket.
 	 *  Env AGY_ACP_SESSION_RETRY wins over the file. */
 	sessionRetryOnTimeout: boolean;
+	/** OMP only (absent under pi): native step display, see NativeSteps.
+	 *  Env AGY_NATIVE_STEPS wins over the file. Takes effect on the next
+	 *  native step. */
+	nativeSteps?: NativeSteps;
 }
 
 export interface AgyConfig {
@@ -433,6 +453,7 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 		? ["1", "true", "on"].includes(envSessionRetry.toLowerCase())
 		: fileAcp.sessionRetryOnTimeout === true;
 	const acp: AcpConfig = { usageEstimate, sessionTimeoutMs, sessionRetryOnTimeout };
+	if (isOmpHost()) acp.nativeSteps = toNativeSteps(process.env.AGY_NATIVE_STEPS ?? fileAcp.nativeSteps) ?? "inline";
 
 	// Custom agent for stream-json turns (--agent). Env wins over the file
 	// (same pattern as mode). Normalized (trim/cap/control-strip); an empty
@@ -518,6 +539,10 @@ export function saveConfig(patch: ConfigPatch, configFile: string = configPath()
 		),
 		sessionRetryOnTimeout: patchAcp?.sessionRetryOnTimeout ?? (fileAcp.sessionRetryOnTimeout === true),
 	};
+	// Persist only a value the user chose, normalized: an unset key keeps
+	// tracking the default, junk is dropped.
+	const nativeSteps = isOmpHost() ? toNativeSteps(patchAcp?.nativeSteps ?? fileAcp.nativeSteps) : undefined;
+	if (nativeSteps) mergedAcp.nativeSteps = nativeSteps;
 	const next: AgyConfig = {
 		...DEFAULTS,
 		...file,

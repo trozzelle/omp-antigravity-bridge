@@ -40,3 +40,5 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: replace upstream's README with a distilled OMP README; the sync keeps the fork's README and flags upstream doc changes (docs)
 - omp: rewrite the README in plain prose, correct `AGY_EXTRA_ARGS` (it applies to `AskAntigravity` runs only) and document the agy version floors, setting values and `/agy` commands (docs)
 - omp: native-event sinks may return text the provider appends to the reply's thinking at the step's position, for started, completed and failed steps alike (cards) [upstreamable]
+- omp: show agy's native ACP steps as trace lines in the reply's thinking, in order, instead of cards OMP queues below the finished reply; `acp.nativeSteps` / `AGY_NATIVE_STEPS` / `/agy steps inline|cards` keeps cards available (cards)
+- omp: keep native-event and poll-run card messages out of the model's context; OMP sends custom messages as developer messages regardless of `excludeFromContext` (cards)

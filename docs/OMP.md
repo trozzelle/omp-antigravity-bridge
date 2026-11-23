@@ -42,9 +42,11 @@ OMP sends your latest message, plus any notices it attached after it, as the pro
 
 The `activate_skill` catalog is the session's real skill list, including skills from installed plugins, and leaves out skills OMP hides from the model. It follows the skills list in OMP's system prompt: when OMP lists no skills there (every skill hidden, or no active tool can read `skill://`), the bridge offers none. If you replaced OMP's system prompt with your own, the bridge cannot tell and offers every skill.
 
-### Native tool cards
+### Native tool steps
 
-agy's native tool steps (ACP engine) and bridge poll runs show as cards, kept out of the model's context and restored on resume. OMP draws these cards after the reply finishes rather than live above it.
+OMP shows an Antigravity reply as one message, and anything an extension adds while that message is streaming waits until it ends. Cards for agy's native tool steps (ACP engine) and bridge poll runs would therefore all appear below the finished reply. Under OMP the bridge writes each step into the reply's thinking instead: a `✓`/`✗` line with the tool name and its file or command, plus the diff for an edit, in the order the steps ran, so the reply's text stays directly above the input. Hide thinking and the steps are hidden too. A poll run shows only in the footer while it lasts; the polled tool's result arrives as a normal OMP tool card.
+
+`/agy steps cards` (or `acp.nativeSteps: "cards"`, `AGY_NATIVE_STEPS=cards`) brings back the separate cards, drawn below the reply. Cards from either setting, and from earlier sessions, are kept out of the model's context and redrawn on resume.
 
 ### Model-switch notice
 

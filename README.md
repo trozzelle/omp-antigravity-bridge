@@ -65,7 +65,7 @@ Each turn runs inside agy's own agent loop, in your workspace, on your subscript
 
 | Engine | What it is | Notes |
 | --- | --- | --- |
-| `acp` (default) | `agy acp`, JSON-RPC over stdio | Exact token usage. agy's own tool steps appear as cards in the transcript. |
+| `acp` (default) | `agy acp`, JSON-RPC over stdio | Exact token usage. agy's own tool steps appear in the reply's thinking as trace lines, in the order they ran (`/agy steps cards` switches to separate cards). |
 | `stream-json` | A persistent `agy` CLI process | The fallback. agy's read-only steps re-run as native OMP `read`/`glob`/`grep` cards. |
 
 Both use the same `agy` install and sign-in. To switch, run `/agy engine acp|stream-json` and restart OMP. Details: [docs/ENGINES.md](docs/ENGINES.md).
@@ -114,6 +114,7 @@ Without the gate, agy runs commands without asking, like every other tool in a y
 | `webTools` (restart to apply) | `off` | `/agy web on\|off` | `AGY_WEB_TOOLS` |
 | `digest`: send OMP-side context agy hasn't seen | `on` | `/agy digest on\|off` | `AGY_DIGEST` |
 | `systemPrompt`: send your context files, skills list and appended system prompt to new agy conversations | `on` | `/agy system-prompt on\|off` | `AGY_SYSTEM_PROMPT` |
+| `acp.nativeSteps`: show agy's own tool steps (ACP) as `inline` trace lines in the reply's thinking, or as `cards` that OMP draws below the finished reply | `inline` | `/agy steps inline\|cards` | `AGY_NATIVE_STEPS` |
 | `readOnly`: refuse every turn | `off` | `/agy readonly on\|off` | `AGY_READONLY` |
 | `skipPermissions`: auto-approve agy's own permission prompts (needed headless) | `on` | `/agy permissions on\|off` | `AGY_SKIP_PERMISSIONS` |
 | `turnTimeoutMin`: cap on one turn, in minutes; pauses while OMP tools run | `0` (no cap) in the TUI, `20` headless | `/agy timeout <1-1440\|off>` | `AGY_TURN_TIMEOUT_MIN` |
