@@ -10,11 +10,9 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: detect the OMP host and load without generateDiffString or registerEntryRenderer (load)
 - omp: upstream sync automation, CI workflows, load smoke and live checklist (sync)
 - omp: read OMP's system prompt, tools and developer-role messages (context)
-- omp: flush session bindings before shutdown (sessions) [upstreamable]
 - omp: keep OMP one-shot calls and side turns off the session's conversation and recognise OMP compaction summaries (compaction)
-- omp: share one bridge runtime across subagent sessions (runtime)
+- omp: route OMP subagents through upstream's realm runtime: unknown session ids ride the main session, one-shot calls and side turns get their own agy process, worker-thread realms tag their per-pid files (runtime)
 - omp: send real tool schemas to agy, match OMP MCP tools in `mcp` mode, never bridge OMP harness tools (catalog)
-- omp: re-execute agy `read_file` steps as native reads (re-exec) [upstreamable]
 - omp: re-execute agy read steps on OMP `read` selectors, `list_dir` on `read`, `find_by_name` on `glob`, without the pi-only reasoning argument (re-exec)
 - omp: draw native-event and poll-run cards as display-only messages (cards)
 - omp: dedicated approval tool deferring to the host approval mode; approvals.mode inherit; gate auto and ACP permission policy follow host approval settings (approval)
@@ -24,7 +22,6 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: print /agy doctor to stdout in headless print mode (doctor) [upstreamable]
 - omp: document installing and using the bridge with OMP (docs)
 - omp: keep the user's message and OMP summary messages out of the digest (context)
-- omp: fail closed on agy's own permission requests while the approval gate is on: skipPermissions no longer auto-allows them, approvals.mode allow/deny decide, ask/inherit park on the permission dialog; permission log events carry the tool identity (approval) [upstreamable]
 - omp: point agy at activate_skill only once the bridge serves it (context)
 - omp: wire the OMP approval gate and session teardown beside upstream's blocks instead of inside them (runtime)
 - omp: draw command output in expanded native-event cards without carriage returns or control bytes (cards) [upstreamable]
@@ -42,3 +39,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: native-event sinks may return text the provider appends to the reply's thinking at the step's position, for started, completed and failed steps alike (cards) [upstreamable]
 - omp: show agy's native ACP steps as trace lines in the reply's thinking, in order, instead of cards OMP queues below the finished reply; `acp.nativeSteps` / `AGY_NATIVE_STEPS` / `/agy steps inline|cards` keeps cards available (cards)
 - omp: keep native-event and poll-run card messages out of the model's context; OMP sends custom messages as developer messages regardless of `excludeFromContext` (cards)
+- omp: rebase onto upstream 1.13.3: the prompt reads upstream's trailing user run with OMP developer messages and summaries, and the activate_skill catalog tolerates a host without a command list (sync)

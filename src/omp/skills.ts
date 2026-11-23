@@ -83,12 +83,14 @@ export function skillVisibility(options: SkillsFromCommandsOptions = {}): ((skil
 
 /** Skills the session loaded, as listed by `pi.getCommands()`; [] when the host lists none. */
 export function skillsFromCommands(pi: SkillCommandsHost, options: SkillsFromCommandsOptions = {}): SkillLite[] {
-	let commands: readonly unknown[];
+	let commands: unknown;
 	try {
 		commands = pi.getCommands();
 	} catch {
 		return [];
 	}
+	// A host (or test double) without a command list yields no skills.
+	if (!Array.isArray(commands)) return [];
 	const visible = skillVisibility(options);
 	const seen = new Set<string>();
 	const out: SkillLite[] = [];

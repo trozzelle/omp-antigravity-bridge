@@ -327,15 +327,9 @@ describe("OMP context in a provider turn", () => {
 	});
 });
 
+// Where the delta ends for a turn (the trailing user/developer run start) is
+// pinned end to end above: the provider passes the run start as `end`.
 describe("OMP developer messages in the digest", () => {
-	it("ends the delta where the trailing user/developer run starts", () => {
-		const messages = [ompUser("hi"), ompAssistant("hello", "anthropic"), ompUser("Fix the test"), ompDeveloper("<system-reminder>note</system-reminder>")];
-		const digest = buildContextDigest(ompContext({ messages }).messages, 0);
-		expect(digest).toContain("[earlier user message]\nhi");
-		expect(digest).not.toContain("Fix the test");
-		expect(digest).not.toContain("note");
-	});
-
 	it("still includes the whole transcript on a compaction resume", () => {
 		const messages = [ompUser("hi"), ompAssistant("hello", "anthropic"), ompUser("Fix the test")];
 		const digest = buildContextDigest(ompContext({ messages }).messages, 0, { includeLast: true });
