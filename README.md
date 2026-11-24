@@ -45,7 +45,7 @@ omp plugin install github:trozzelle/omp-antigravity-bridge#latest   # follow rel
 omp plugin install github:trozzelle/omp-antigravity-bridge#v1.13.1-omp.5   # or pin one release
 ```
 
-Releases are tagged `v<upstream-version>-omp.<N>` and listed on the [Releases](https://github.com/trozzelle/omp-antigravity-bridge/releases) page. Don't install from `main`, because every upstream sync rewrites its history.
+Releases are tagged `v<upstream-version>-omp.<N>` and listed on the [Releases](https://github.com/trozzelle/omp-antigravity-bridge/releases) page. Install a release tag or `latest` rather than `main`.
 
 ## Usage
 
@@ -159,7 +159,7 @@ The wording is still broad, and Google can suspend accounts at its discretion. U
 
 ## Development
 
-`main` is upstream's code (the `upstream` branch) plus a stack of `omp:` commits. A weekly workflow rebases the stack onto new upstream releases and opens a pull request. Promoting it tags a release, publishes the marketplace bundle and moves `latest`. Every other pull request merged into `main` is released the same way once CI passes on the merge commit; label a pull request `skip-release` to merge it without one.
+`main` is upstream's code (the `upstream` branch) with the `omp:` changes on top, and its history is never rewritten. A weekly workflow merges new upstream releases into a `sync/<sha>` branch and opens a pull request. Merge it with a merge commit, never squash or rebase, because the next sync needs `main` to contain `upstream`. Every pull request merged into `main`, syncs included, is released once CI passes on the merge commit: a new tag, a GitHub release, the marketplace bundle and `latest`. Label a pull request `skip-release` to merge it without one.
 
 ```bash
 npm install

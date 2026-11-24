@@ -41,3 +41,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: keep native-event and poll-run card messages out of the model's context; OMP sends custom messages as developer messages regardless of `excludeFromContext` (cards)
 - omp: rebase onto upstream 1.13.3: the prompt reads upstream's trailing user run with OMP developer messages and summaries, and the activate_skill catalog tolerates a host without a command list (sync)
 - omp: release every pull request merged into main once CI passes on the merge commit, with the next `v<version>-omp.<N>` tag, `latest`, a GitHub release and the marketplace bundle; `skip-release` opts a pull request out (release)
+- omp: sync upstream by merging it into main instead of rebasing the fork onto it: main is never rewritten, sync pull requests are merged (with a merge commit) and released like any other, Promote sync is retired, and the sync refuses to run once main stops containing upstream (sync)

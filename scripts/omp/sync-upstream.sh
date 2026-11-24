@@ -5,12 +5,17 @@
 #      `git subtree split --prefix=packages/pi-antigravity-bridge`. The split
 #      is deterministic, so an unchanged upstream yields the same commit.
 #   2. Fast-forward the local `upstream` branch to the split tip.
-#   3. Create `sync/<short-sha>` = `main` rebased onto `upstream`.
-#      Conflicts in fork-owned files resolve automatically: package.json takes
-#      upstream's file and re-runs scripts/omp/apply-package-overrides.mjs;
-#      README.md keeps the fork's README (upstream's stays on the upstream
-#      branch). Any other conflict aborts the rebase and names the failing
-#      patch commit.
+#   3. Create `sync/<short-sha>` = `main` with `upstream` merged in (a merge
+#      commit; main is never rewritten). Conflicts in fork-owned files resolve
+#      automatically: package.json takes upstream's file and re-runs
+#      scripts/omp/apply-package-overrides.mjs; README.md keeps the fork's
+#      README (upstream's stays on the upstream branch). Any other conflict
+#      aborts the merge and names the fork commits that touched the
+#      conflicted files.
+#
+# main must contain `upstream`: the sync pull request is merged with a merge
+# commit. A squash or rebase merge drops upstream from main's history, and the
+# next run refuses to sync until upstream is merged back in by hand.
 #
 # Run from the root of a clone of the fork with a clean worktree and a git
 # identity configured. Local branches `upstream` and `main` are created from
@@ -25,10 +30,10 @@
 #   SYNC_OUT_DIR       where result files go (default <git-dir>/omp-sync)
 #   FORCE=1            rebuild sync/<sha> even if <remote>/sync/<sha> exists
 #
-# Exit codes: 0 up to date, pending, or synced; 1 error; 3 rebase conflict.
-# Result keys (status, sha, branch, upstream_sha, upstream_version, base_version,
-# main_sha, failing_commit, conflict_files) are printed as key=value lines and
-# appended to $GITHUB_OUTPUT when set.
+# Exit codes: 0 up to date, pending, or synced; 1 error; 3 merge conflict.
+# Result keys (status, sha, branch, upstream_sha, upstream_version, base_sha,
+# base_version, main_sha, fork_commits, conflict_files) are printed as
+# key=value lines and appended to $GITHUB_OUTPUT when set.
 set -euo pipefail
 
 UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/EstebanForge/pi-extensions.git}"
@@ -74,6 +79,7 @@ git var GIT_COMMITTER_IDENT >/dev/null 2>&1 || die "no git identity; set user.na
 if [[ -d "$(git rev-parse --git-path rebase-merge)" || -d "$(git rev-parse --git-path rebase-apply)" ]]; then
 	die "a rebase is already in progress"
 fi
+git rev-parse -q --verify MERGE_HEAD >/dev/null && die "a merge is already in progress"
 ensure_branch upstream
 ensure_branch main
 start_ref="$(git symbolic-ref --quiet --short HEAD || git rev-parse HEAD)"
@@ -119,7 +125,10 @@ emit upstream_sha "$split"
 emit sha "$short"
 emit main_sha "$main_sha"
 
-if [[ "$split" == "$old_upstream" ]] && git merge-base --is-ancestor upstream main; then
+git merge-base --is-ancestor "$old_upstream" main ||
+	die "main does not contain upstream ${old_upstream:0:7}; was a sync pull request squash- or rebase-merged? Merge upstream into main by hand (git merge upstream) before syncing again"
+
+if [[ "$split" == "$old_upstream" ]]; then
 	emit status up-to-date
 	echo "sync-upstream: upstream unchanged at $short; main already contains it" >&2
 	exit 0
@@ -137,6 +146,7 @@ base="$(git merge-base main upstream)"
 upstream_version="$(pkg_version upstream)"
 base_version="$(pkg_version "$base")"
 emit upstream_version "$upstream_version"
+emit base_sha "$base"
 emit base_version "$base_version"
 
 # Upstream changelog sections added since the version main is based on.
@@ -157,25 +167,19 @@ if [[ "${FORCE:-}" != "1" ]] && git show-ref --verify --quiet "refs/remotes/$SYN
 	exit 0
 fi
 
-# 3. Rebase main onto upstream.
+# 3. Merge upstream into main.
 git switch --quiet -C "$branch" main
-rebase() {
-	git -c core.editor=true -c rerere.enabled=false -c rebase.autoStash=false "$@" >>"$work/rebase.log" 2>&1
-}
-rebase_in_progress() {
-	[[ -d "$(git rev-parse --git-path rebase-merge)" || -d "$(git rev-parse --git-path rebase-apply)" ]]
-}
-
+merge_msg="sync: merge upstream $upstream_version ($short)"
 status=0
-rebase rebase upstream || status=$?
-while [[ $status -ne 0 ]]; do
-	rebase_in_progress || {
-		cat "$work/rebase.log" >&2
+git -c core.editor=true -c rerere.enabled=false \
+	merge --no-ff --no-edit -m "$merge_msg" upstream >>"$work/merge.log" 2>&1 || status=$?
+if [[ $status -ne 0 ]]; then
+	git rev-parse -q --verify MERGE_HEAD >/dev/null || {
+		cat "$work/merge.log" >&2
 		git switch --quiet "$start_ref"
 		git branch --quiet -D "$branch"
-		die "git rebase failed without stopping on a commit"
+		die "git merge failed without stopping on a conflict"
 	}
-	failing="$(git log -1 --format='%h %s' REBASE_HEAD)"
 	conflicts="$(git diff --name-only --diff-filter=U)"
 	# Fork-owned files: package.json is upstream's file plus the overrides;
 	# README.md is the fork's own README (upstream's stays on the upstream branch).
@@ -187,43 +191,50 @@ while [[ $status -ne 0 ]]; do
 		*) auto=0 ;;
 		esac
 	done <<<"$conflicts"
-	if [[ $auto -eq 1 && -n "$conflicts" ]]; then
-		if grep -qx 'package.json' <<<"$conflicts"; then
-			echo "sync-upstream: $failing: package.json conflict, taking upstream's file and re-applying overrides" >&2
-			git show upstream:package.json >package.json
-			node "$OVERRIDES_SCRIPT"
-			git add package.json
-		fi
-		if grep -qx 'README.md' <<<"$conflicts"; then
-			echo "sync-upstream: $failing: README.md conflict, keeping the fork's README" >&2
-			git checkout --theirs -- README.md
-			git add README.md
-		fi
-		status=0
-		if git diff --cached --quiet HEAD; then
-			rebase rebase --skip || status=$?
-		else
-			rebase rebase --continue || status=$?
-		fi
-		continue
+	if [[ $auto -eq 0 || -z "$conflicts" ]]; then
+		cat "$work/merge.log" >&2
+		git merge --abort
+		git switch --quiet "$start_ref"
+		git branch --quiet -D "$branch"
+		files="$(echo "$conflicts" | paste -sd ' ' -)"
+		# The fork commits since the last sync that touched the conflicted files.
+		# shellcheck disable=SC2086 # word-split the file list into pathspecs
+		fork_commits="$(git log --no-merges --format='%h %s' "$base..main" -- $files | paste -sd ';' - | sed 's/;/; /g')"
+		{
+			echo "fork_commits=$fork_commits"
+			echo "conflict_files=$files"
+		} >"$out_dir/conflict.txt"
+		emit status conflict
+		emit fork_commits "$fork_commits"
+		emit conflict_files "$files"
+		echo "sync-upstream: CONFLICT merging upstream $short into main" >&2
+		echo "sync-upstream: conflicted files: $files" >&2
+		exit 3
 	fi
-	cat "$work/rebase.log" >&2
-	git rebase --abort
-	git switch --quiet "$start_ref"
-	git branch --quiet -D "$branch"
-	{
-		echo "failing_commit=$failing"
-		echo "conflict_files=$(echo "$conflicts" | paste -sd ' ' -)"
-	} >"$out_dir/conflict.txt"
-	emit status conflict
-	emit failing_commit "$failing"
-	emit conflict_files "$(echo "$conflicts" | paste -sd ' ' -)"
-	echo "sync-upstream: CONFLICT replaying $failing onto upstream $short" >&2
-	echo "sync-upstream: conflicted files: $(echo "$conflicts" | paste -sd ' ' -)" >&2
-	exit 3
-done
+	if grep -qx 'package.json' <<<"$conflicts"; then
+		echo "sync-upstream: package.json conflict, taking upstream's file and re-applying overrides" >&2
+		git show upstream:package.json >package.json
+		node "$OVERRIDES_SCRIPT"
+		git add package.json
+	fi
+	if grep -qx 'README.md' <<<"$conflicts"; then
+		echo "sync-upstream: README.md conflict, keeping the fork's README" >&2
+		git checkout --ours -- README.md
+		git add README.md
+	fi
+	git -c core.editor=true commit --quiet --no-edit >>"$work/merge.log" 2>&1
+fi
+# A clean merge can still combine upstream's package.json edits with the fork's
+# in a way the overrides would not produce; the overrides own the file.
+if [[ -f "$OVERRIDES_SCRIPT" ]]; then
+	node "$OVERRIDES_SCRIPT"
+	if ! git diff --quiet -- package.json; then
+		git add package.json
+		git -c core.editor=true commit --quiet --amend --no-edit
+	fi
+fi
 
 git switch --quiet "$start_ref"
 emit status synced
 emit branch "$branch"
-echo "sync-upstream: created $branch ($(git rev-list --count upstream.."$branch") patch commits on upstream $short, version $upstream_version)" >&2
+echo "sync-upstream: created $branch (upstream $short merged into main, version $upstream_version)" >&2
