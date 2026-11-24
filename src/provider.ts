@@ -50,12 +50,13 @@ import {
 	contextSystemPrompt,
 	contextTools,
 	isOmpCompactionSummary,
+	isOmpSummaryText,
 	isUserLikeRole,
-	OMP_BRANCH_SUMMARY_PREFIX,
 } from "./omp/context.js";
 import { ompApprovalToolCall } from "./omp/approval-tool.js";
 import { isOmpHost } from "./omp/host.js";
 import { isEphemeralCall, ompHandoffBody } from "./omp/oneshot.js";
+import { ompReexecArgs } from "./omp/native-reexec.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -125,9 +126,7 @@ function lastMessageParts(m: Message | undefined): { text: string | null; images
 /** pi-side history shapes that can sit inside a trailing user run; a run
  *  member matching one truncates the run to the messages after it. */
 function isBacklogUserShape(text: string): boolean {
-	// OMP: compaction, handoff and branch-return summaries ship through the
-	// digest, never as part of the prompt.
-	if (isOmpCompactionSummary(text) || (isOmpHost() && text.trimStart().startsWith(OMP_BRANCH_SUMMARY_PREFIX))) return true;
+	if (isOmpSummaryText(text)) return true;
 	return text.includes(COMPACTION_MARKER) || text.startsWith(BRANCH_SUMMARY_PREFIX) || text.startsWith(BASH_RUN_PREFIX);
 }
 
@@ -1520,11 +1519,10 @@ export function consumeActivity(
 				feats.roundTrips.track(id, mapped.tool);
 				// pi requires a reasoning argument on read/edit-class builtin calls
 				// (validated against the wrapped schema); harmless where absent.
-				// OMP builtins take no reasoning argument, and glob rejects unknown keys.
-				const reexecArgs = isOmpHost()
-					? mapped.args
-					: { reasoning: `re-exec of agy ${activity.name} for display`, ...mapped.args };
-				emitToolUse(stream, blocks, id, mapped.tool, reexecArgs as Record<string, JsonValue>);
+				emitToolUse(stream, blocks, id, mapped.tool, ompReexecArgs({
+					reasoning: `re-exec of agy ${activity.name} for display`,
+					...mapped.args,
+				}) as Record<string, JsonValue>);
 				return "parked";
 			}
 			if (feats.nativeActive && !feats.nativeActive("antigravity")) {

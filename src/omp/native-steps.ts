@@ -5,7 +5,8 @@
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { DialogRow } from "@estebanforge/pi-tui-dialogs";
-import { configPath, loadConfig, saveConfig, toNativeSteps, type AgyConfig } from "../config.js";
+import { configPath, loadConfig, saveConfig, type AgyConfig } from "../config.js";
+import { toNativeSteps } from "./config.js";
 import { nativeStepMode } from "./cards.js";
 import { isOmpHost } from "./host.js";
 

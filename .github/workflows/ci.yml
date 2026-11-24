@@ -30,6 +30,17 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # upstream and the base branch, for the footprint report
+
+      - name: Fork footprint on upstream files
+        # Report only (job summary, plus a warning when a pull request grows
+        # it); a failure here never fails the build.
+        continue-on-error: true
+        env:
+          # Pull requests compare with their base; dispatched sync branches with main.
+          BASE_REF: ${{ github.base_ref || (github.event_name == 'workflow_dispatch' && 'main') || '' }}
+        run: bash scripts/omp/fork-diff.sh --upstream origin/upstream ${BASE_REF:+--base "origin/$BASE_REF"}
 
       - uses: actions/setup-node@v7
         with:

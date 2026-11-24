@@ -59,11 +59,8 @@ import {
 	type AnyToolDefinition,
 	type GatePolicy,
 } from "../src/approval-gate.js";
-import { acpPermissionPolicy, effectiveGateMode, loadOmpSettingsLookup, readOmpApprovalSettings } from "../src/omp/approval-settings.js";
-import { wireOmpApprovalGate } from "../src/omp/approval-gate.js";
 import { hookScriptSource, removeGateHooks, stageGateHooks, sweepWorkspaceGateGroups } from "../src/approval-hook.js";
 import { StreamDriver } from "../src/driver.js";
-import { createOneshotProvider } from "../src/omp/oneshot-driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
 import { removeStagedAgyHome, stageAgyHome, sweepStagedAgyHomes, writeOwnBridgeEntry } from "../src/acp/home.js";
 import { cleanupManagedAcpInstall } from "../src/acp/setup.js";
@@ -71,7 +68,7 @@ import { agyAuthenticationMessage } from "../src/agy-install.js";
 import { createAgySetupOffer } from "../src/agy-setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { configPath, configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, toNativeSteps, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type NativeSteps, type ThinkingTier } from "../src/config.js";
+import { configPath, configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { agyVersionVerdict, agyUpdateMessage, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
@@ -125,12 +122,12 @@ import {
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
-import { initHost, isOmpHost } from "../src/omp/host.js";
-import { NATIVE_EVENT_CARD, POLL_RUN_CARD, emitDisplayCard, nativeEventSummary, nativeStepMode, nativeStepTrace, pollRunSummary, registerCardContextFilter, registerCardRenderers } from "../src/omp/cards.js";
-import { NATIVE_STEPS_ROW_ID, nativeStepsPickerRows, nativeStepsSettingsRows, runStepsCommand } from "../src/omp/native-steps.js";
-import { ModelChangeTracker } from "../src/omp/model-change.js";
-import { showReport } from "../src/omp/report.js";
-import { isWorkerRealm, sessionKindOf, type SessionKind } from "../src/omp/runtime.js";
+import {
+	NATIVE_EVENT_CARD, NATIVE_STEPS_ROW_ID, POLL_RUN_CARD, acpPermissionPolicy, createOmpOneshots, effectiveGateMode, emitDisplayCard, isOmpHost,
+	isOmpWorkerRealm, nativeEventSummary, nativeStepMode, nativeStepTrace, nativeStepsPickerRows, nativeStepsSettingsRows, ompRefusesPatchCleanup,
+	ompSessionKind, pollRunSummary, readOmpApprovalSettings, registerCardContextFilter, registerCardRenderers, runStepsCommand, sessionKindOf,
+	setupOmpHost, showReport, toNativeSteps, watchOmpModelChanges, wireOmpApprovalGate, type NativeSteps, type SessionKind,
+} from "../src/omp/index.js";
 
 // Claim the AskAntigravity tool for this process. pi-ask-antigravity (if also
 // installed) checks this in-process flag OR the bridge's package.json on disk
@@ -149,10 +146,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Per-factory UI reference so child session_shutdown never clears the
 	// parent's UI context.
 	let activeUi: ExtensionUIContext | null = null;
-	initHost(pi);
-	// OMP settings registry (approval mode, policies, restricted folders);
-	// loaded once, read synchronously by the gate and the ACP policy.
-	if (isOmpHost()) await loadOmpSettingsLookup();
+	await setupOmpHost(pi);
 	ensureQueuedMessagesDefaults({ onlyIfDirExists: true });
 
 	const binary = resolveAgyBinary();
@@ -674,19 +668,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 	};
 	pi.on("model_select", (event, ctx) => notifyModelHandoff(event.model?.api, event.source, ctx));
-	// OMP raises no model_select to extensions: compare the model each prompt
-	// runs on with the one the session started on (src/omp/model-change.ts).
-	if (isOmpHost()) {
-		const modelChanges = new ModelChangeTracker();
-		pi.on("session_start", (_event, ctx) => modelChanges.baseline(ctx.model));
-		// /resume, /new and /fork raise session_switch (not session_start) and
-		// restore the target session's model: a restore, never a switch.
-		modelChanges.baselineOnSessionSwitch(pi);
-		pi.on("before_agent_start", (_event, ctx) => {
-			const switched = modelChanges.observe(ctx.model);
-			if (switched) notifyModelHandoff(switched.api, "set", ctx);
-		});
-	}
+	watchOmpModelChanges(pi, (api, ctx) => notifyModelHandoff(api, "set", ctx));
 	const streamSimple = createStreamSimple({
 		entries,
 		store,
@@ -704,19 +686,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// Same condition listTools uses to offer activate_skill.
 		skillsToolOffered: () => bridgeSkillCount > 0 && loadConfig().bridgeTools !== "none",
 	});
-	// OMP one-shot calls and /btw side turns get their own agy process
-	// (src/omp/oneshot-driver.ts): on this session's stream-json driver they
-	// waited for its open turn and restarted its warm agy. Isolated home only:
-	// on the global config a throwaway agy would see other sessions' bridges.
-	const oneshots =
-		isOmpHost() && engine === "stream-json" && streamHome.isolated
-			? createOneshotProvider({ entries, store, log: fileLog.log.bind(fileLog), driverLog: streamDriver.log })
-			: undefined;
+	const oneshots = createOmpOneshots(engine, streamHome.isolated, { entries, store, log: fileLog.log.bind(fileLog), driverLog: streamDriver.log });
 
 	const joinRealm = (kind: SessionKind) =>
 		realm.join({
-			// pi keeps upstream's routing: no kind, ambiguous calls are refused.
-			kind: isOmpHost() ? kind : undefined,
+			kind: ompSessionKind(kind),
 			sessionId: () => liveSessionId(currentSessionManager),
 			streamSimple,
 			oneshot: oneshots?.streamSimple,
@@ -1002,9 +976,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
 		if (bridgeMode === "none") return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
-		// OMP runs a worker-thread session's provider calls on the main thread,
-		// so a listener started in this realm would never be called.
-		if (isOmpHost() && isWorkerRealm()) return;
+		if (isOmpWorkerRealm()) return;
 		// The host's own skill list when it has one (pi.getCommands, which
 		// already applies pi's project-trust gate); otherwise scan, loading
 		// project skill locations only after the project is trusted.
@@ -1430,10 +1402,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				return;
 			}
 			if (sub === "patch-cleanup") {
-				if (isOmpHost()) {
-					ui?.notify("patch-cleanup only applies to pi installs; nothing to clean under OMP.", "info");
-					return;
-				}
+				if (ompRefusesPatchCleanup(ui)) return;
 				const st = patchStatus();
 				if (!st.present) {
 					ui?.notify(
