@@ -64,9 +64,14 @@ export function bridgedPiTools(
 		!BRIDGE_INTERNAL_TOOLS.has(tool.name) &&
 		// OMP session-control tools (staged-action resolve, plan proposal, ...).
 		!isOmpHarnessTool(tool) &&
-		(mode === "mcp"
-			? /pi-mcp-adapter/.test(tool.sourceInfo?.source ?? "") || isOmpMcpTool(tool)
-			: tool.sourceInfo?.source !== "builtin"),
+		(mode === "codemode"
+			// Codemode mode: pi's builtin codemode tool is the one builtin that
+			// bridges (scripts reach the rest pi-side); the info/call pair covers
+			// tools the engine should not call directly.
+			? tool.name === "codemode" || tool.sourceInfo?.source !== "builtin"
+			: mode === "mcp"
+				? /pi-mcp-adapter/.test(tool.sourceInfo?.source ?? "") || isOmpMcpTool(tool)
+				: tool.sourceInfo?.source !== "builtin"),
 	);
 }
 
@@ -78,6 +83,21 @@ export function partitionBridgeTools<T extends BridgeToolInfo>(tools: readonly T
 		if (PI_DEFAULT_TOOLS.has(tool.name)) direct.push(tool);
 		else proxied.push(tool);
 	}
+	return { direct, proxied };
+}
+
+/** Codemode-only catalog projection: pi's codemode tool is the one direct
+ *  tool (its own description teaches the script grammar and pi executes the
+ *  scripts with pi's tools injected), every other authorized tool rides the
+ *  info/call pair so the engine never sees a wide direct catalog. */
+export function codemodeCatalog<T extends BridgeToolInfo>(
+	authorized: readonly T[],
+): { direct: Array<{ name: string; description: string; inputSchema: object }>; proxied: T[] } {
+	const cm = authorized.find((t) => t.name === "codemode");
+	const proxied = authorized.filter((t) => t.name !== "codemode");
+	const direct = cm
+		? [{ name: cm.name, description: cm.description ?? cm.name, inputSchema: serializeToolSchema(cm.parameters) }]
+		: [];
 	return { direct, proxied };
 }
 

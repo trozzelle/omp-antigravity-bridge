@@ -74,7 +74,7 @@ Both use the same `agy` install and sign-in. To switch, run `/agy engine acp|str
 
 While an Antigravity model is active, agy can call your OMP tools through a local MCP server inside OMP (bound to `127.0.0.1`, protected by a per-session token). The calls run in OMP's own tool loop, so they get OMP's normal cards, approvals and hooks. A call that takes longer than about 20 seconds returns a handle that agy polls, and it can run for up to 30 minutes. agy also gets an `activate_skill` tool for your skills.
 
-`/agy bridge all|mcp|none` sets what agy can see: all of them (the default), only MCP tools and skills, or none. `/agy tools hide <name>` hides one tool for the session. If agy can see other delegation tools such as `AskClaude`, it can hand work to other models, and you pay for those calls.
+`/agy bridge all|mcp|codemode|none` sets what agy can see: all of them (the default), only MCP tools and skills, only the host's `codemode` tool (which must be active, so agy reaches the other tools from scripts), or none. `/agy tools hide <name>` hides one tool for the session. If agy can see other delegation tools such as `AskClaude`, it can hand work to other models, and you pay for those calls.
 
 ### AskAntigravity
 
@@ -109,7 +109,7 @@ Without the gate, agy runs commands without asking, like every other tool in a y
 | Setting | Default | Command | Env |
 | --- | --- | --- | --- |
 | `engine` (restart to apply) | `acp` | `/agy engine acp\|stream-json` | `AGY_ENGINE` |
-| `bridgeTools` | `all` | `/agy bridge all\|mcp\|none` | `AGY_BRIDGE_TOOLS` |
+| `bridgeTools` | `all` | `/agy bridge all\|mcp\|codemode\|none` | `AGY_BRIDGE_TOOLS` |
 | `askTool` (restart to apply) | `on` | `/agy ask on\|off` | `AGY_ASK_TOOL` |
 | `webTools` (restart to apply) | `off` | `/agy web on\|off` | `AGY_WEB_TOOLS` |
 | `digest`: send OMP-side context agy hasn't seen | `on` | `/agy digest on\|off` | `AGY_DIGEST` |
@@ -120,7 +120,7 @@ Without the gate, agy runs commands without asking, like every other tool in a y
 | `turnTimeoutMin`: cap on one turn, in minutes; pauses while OMP tools run | `0` (no cap) in the TUI, `20` headless | `/agy timeout <1-1440\|off>` | `AGY_TURN_TIMEOUT_MIN` |
 | `inactivityTimeoutMin`: fail a turn after this many minutes of silence | `5` | | `AGY_INACTIVITY_TIMEOUT_MIN` |
 | `defaultModel`: the `AskAntigravity` model, as an alias or an exact id | `gemini-4-hydrogen` | `/agy model flash\|pro\|gemini` | `AGY_DEFAULT_MODEL` |
-| `defaultThinking`: the `AskAntigravity` thinking level | `medium` | `/agy thinking low\|medium\|high` | `AGY_DEFAULT_THINKING` |
+| `defaultThinking`: the `AskAntigravity` thinking level | `medium` | `/agy thinking low\|medium\|high\|xhigh` | `AGY_DEFAULT_THINKING` |
 | `approvals.gateMode`: `auto` (follow OMP's approval settings), `dedicated` (always on), `off` | `auto` | | `AGY_APPROVALS` |
 | `approvals.mode`: `inherit` (OMP's approval mode decides), `ask`, `allow`, `deny` | `inherit` | | `AGY_APPROVALS_MODE` |
 

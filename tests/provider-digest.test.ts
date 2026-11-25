@@ -11,6 +11,7 @@ import type { Message, Usage } from "@earendil-works/pi-ai";
 import {
 	boundaryFingerprint,
 	buildContextDigest,
+	buildContextDigestResult,
 	compactionFingerprint,
 	digestMaxCharsForEngine,
 	findLastCompactionIdx,
@@ -234,6 +235,59 @@ test("an oversized compaction summary is clamped to the digest budget", () => {
 	assert.doesNotMatch(digest, /tail gist/);
 });
 
+test("one oversized toolResult keeps earlier turns visible (issue #25)", () => {
+	// The backward truncation loop used to break on the first overflowing
+	// part: a single >8KB read result erased every earlier turn from the
+	// mid-session handoff (issue #25 repro: "Remember ALPHA-42" vanished).
+	const big = toolResult("read", "x".repeat(9_000));
+	const digest = buildContextDigest([user("Remember ALPHA-42"), big, user("now")], 0, { maxChars: 8000 });
+	assert.match(digest, /ALPHA-42/, "earlier user turn must survive a huge tool result");
+	assert.match(digest, /chars elided/, "the oversized body must be elided, not shipped whole");
+	assert.ok(!digest.includes("x".repeat(9_000)), "the full oversized body must not ship");
+});
+
+test("oversized toolResult elision keeps head and tail (issue #25)", () => {
+	const body = "HEAD-START-" + "m".repeat(9000) + "-END-GIST";
+	const digest = buildContextDigest([toolResult("bash", body), user("now")], 0, { maxChars: 8000 });
+	assert.match(digest, /HEAD-START/, "head slice kept");
+	assert.match(digest, /END-GIST/, "tail slice kept");
+});
+
+test("assistant toolCall blocks render into the digest with capped args (issue #25)", () => {
+	const calls: Message = {
+		role: "assistant",
+		content: [
+			{ type: "text", text: "running the build" } as never,
+			{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "x".repeat(500) } } as never,
+		],
+		api: "anthropic-messages" as never,
+		provider: "openai" as never,
+		model: "m",
+		usage: zeroUsage(),
+		stopReason: "stop",
+		timestamp: 0,
+	};
+	const digest = buildContextDigest([calls, user("now")], 0, { maxChars: 8000 });
+	assert.match(digest, /running the build/);
+	assert.match(digest, /\[tool call: bash\(/, "tool call must render with its name");
+	assert.ok(!digest.includes("x".repeat(500)), "args must be capped, not shipped whole");
+});
+
+test("a tool-call-only assistant turn now renders (previously skipped)", () => {
+	const calls: Message = {
+		role: "assistant",
+		content: [{ type: "toolCall", id: "t1", name: "edit_file", arguments: { path: "/a" } } as never],
+		api: "anthropic-messages" as never,
+		provider: "openai" as never,
+		model: "m",
+		usage: zeroUsage(),
+		stopReason: "stop",
+		timestamp: 0,
+	};
+	const digest = buildContextDigest([calls, user("now")], 0, { maxChars: 8000 });
+	assert.match(digest, /\[tool call: edit_file\(/, "a call-only turn must still ship");
+});
+
 // Direct contracts for the small exported helpers the gate and the toast
 // handler depend on.
 
@@ -259,7 +313,10 @@ test("compactionFingerprint is stable per content and separates summaries", () =
 });
 
 test("digestMaxCharsForEngine: acp uncapped by the prompt, stream-json byte-budgeted", () => {
-	assert.equal(digestMaxCharsForEngine("acp", 90_000), 8000);
+	// 24k per the 120k-char embeddedContext probe (scripts/probe-acp-context.mjs,
+	// 2026-11-24): the transport accepted it and the model recalled needles at
+	// both block extremities exactly.
+	assert.equal(digestMaxCharsForEngine("acp", 90_000), 24_000);
 	assert.equal(digestMaxCharsForEngine("stream-json", 0), 8000);
 	// Budget from bytes: 25000 - 5000 - 4096 = 15904 -> capped at 8000.
 	assert.equal(digestMaxCharsForEngine("stream-json", 5000), 8000);
@@ -276,4 +333,41 @@ test("digest: the window can stop at an explicit end (trailing user run joins th
 	assert.ok(digest.includes("backlog question"), "pre-run backlog stays digest context");
 	assert.ok(!digest.includes("current prompt"), "joined prompt members must not reappear in the digest");
 	assert.ok(!digest.includes("note"), "the whole run is excluded, not just the last message");
+});
+
+test("digest result: untruncated window reports deliveredFrom == windowStart", () => {
+	const msgs = [user("alpha"), asst("openai", "beta"), user("gamma")];
+	const r = buildContextDigestResult(msgs, 0, { bound: false, maxChars: 8000, includeLast: true });
+	assert.equal(r.windowStart, 0);
+	assert.equal(r.windowEnd, 3);
+	assert.equal(r.deliveredFrom, 0);
+	assert.ok(r.text.includes("alpha"));
+	assert.ok(r.text.includes("gamma"));
+});
+
+test("digest result: budget truncation reports the oldest kept message index", () => {
+	// window [0..3): old small, old huge, new small. Newest-first budget keeps
+	// only the newest part, so messages 0 and 1 were skipped for budget.
+	const msgs = [user("s".repeat(20)), user("h".repeat(5000)), user("t".repeat(20))];
+	const r = buildContextDigestResult(msgs, 0, { bound: false, maxChars: 200, includeLast: true });
+	assert.equal(r.windowEnd, 3);
+	assert.equal(r.deliveredFrom, 2, "deliveredFrom must point at the oldest rendered message");
+	assert.ok(r.text.includes("t".repeat(20)));
+	assert.ok(!r.text.includes("h".repeat(100)));
+});
+
+test("digest result: nothing fits reports deliveredFrom == windowEnd", () => {
+	const msgs = [user("h".repeat(5000)), user("t".repeat(5000))];
+	const r = buildContextDigestResult(msgs, 0, { bound: false, maxChars: 200 });
+	assert.equal(r.windowEnd, 1);
+	assert.equal(r.deliveredFrom, 1, "no window content rendered, so nothing is delivered");
+	assert.ok(r.text.length < 300, "tail-slice fallback keeps only a marker + slice");
+});
+
+test("digest result: bound-mode skips do not move deliveredFrom", () => {
+	// own-provider turns render nothing in bound mode; deliveredFrom must
+	// still point at the oldest message whose content is in the digest.
+	const msgs = [user("alpha"), asst("antigravity", "own turn"), user("gamma")];
+	const r = buildContextDigestResult(msgs, 0, { bound: true, maxChars: 8000 });
+	assert.equal(r.deliveredFrom, 0);
 });

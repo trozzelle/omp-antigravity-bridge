@@ -1,6 +1,6 @@
 {
   "name": "omp-antigravity-bridge",
-  "version": "1.13.3-omp",
+  "version": "1.15.1-omp",
   "description": "OMP port of @estebanforge/pi-antigravity-bridge. Gemini provider for Pi on the Antigravity ACP server (official Google ACP) or the stream-json agy CLI. Use antigravity/* models in Pi. Full /model picker support. Models runs Pi's tools. ToS safe to use.",
   "keywords": [
     "pi-package",
@@ -53,7 +53,7 @@
     }
   },
   "dependencies": {
-    "@estebanforge/pi-ask-shared": "^0.1.6",
+    "@estebanforge/pi-ask-shared": "^0.1.7",
     "@estebanforge/pi-tui-dialogs": "^0.1.3",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "diff": "^8.0.4"
@@ -80,12 +80,12 @@
     "@earendil-works/pi-coding-agent": "^1.6.0",
     "@earendil-works/pi-tui": "^1.6.0",
     "@types/node": "^22.0.0",
+    "@types/semver": "^7.7.0",
+    "semver": "^7.7.0",
     "tsx": "^4.19.0",
     "typebox": "^1.3.4",
     "typescript": "^5.8.0",
     "vitest": "^4.1.9",
-    "yaml": "^2.9.0",
-    "@types/semver": "^7.7.0",
-    "semver": "^7.7.0"
+    "yaml": "^2.9.0"
   }
 }

@@ -35,6 +35,7 @@ async function runDriver(
 		effort?: string | null;
 		images?: Array<{ data: string; mimeType: string }>;
 		contextBlock?: { uri: string; title: string; text: string };
+		fallback?: { prompt: string; contextBlock?: { uri: string; text: string } };
 		conversationId?: string | null;
 		timeoutMin?: number;
 		skipPermissions?: boolean;
@@ -42,6 +43,9 @@ async function runDriver(
 		permissionPolicy?: () => "auto" | "deny";
 		gateActive?: () => boolean;
 		onPermissionRequest?: AcpPermissionHandler;
+		onSessionBound?: (info: { sessionId: string; reused: boolean; fresh: boolean }) => void;
+		onBeforePrompt?: (info: { sessionId: string }) => void;
+		onSessionLoadFailed?: (info: { sessionId: string; error: unknown }) => { prompt: string; contextBlock?: { uri: string; text: string } } | void;
 		permissionParkMs?: number;
 		signal?: AbortSignal;
 		log?: (msg: string, data?: unknown) => void;
@@ -76,6 +80,10 @@ async function runDriver(
 		prompt: opts.prompt ?? "hi",
 		images: opts.images,
 		contextBlock: opts.contextBlock,
+		fallback: opts.fallback,
+		onSessionBound: opts.onSessionBound,
+		onBeforePrompt: opts.onBeforePrompt,
+		onSessionLoadFailed: opts.onSessionLoadFailed,
 		timeoutMin: opts.timeoutMin,
 		signal: opts.signal ?? controller.signal,
 	});
@@ -200,6 +208,37 @@ describe("acp/driver load replay (run 6 rules)", () => {
 		const outcome = await run.handle.outcome;
 		assert.equal(outcome.status, "OK");
 		assert.equal(outcome.conversationId, SESSION_ID);
+	});
+
+	test("load failure swaps in the fresh-mode fallback (issue #25)", async () => {
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "BOUND-PROMPT",
+			fallback: {
+				prompt: "FRESH-PROMPT",
+				contextBlock: { uri: "urn:pi-bridge:test/fresh", text: "FRESH-CONTEXT" },
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		assert.equal(sent.length, 1);
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const text = blocks.find((b) => b.type === "text") as { text: string };
+		assert.equal(text.text, "FRESH-PROMPT", "the fallback prompt replaces the bound prompt");
+		const resource = blocks.find((b) => b.type === "resource") as {
+			resource: { uri: string; text: string };
+		};
+		assert.equal(resource.resource.text, "FRESH-CONTEXT", "the fallback context block ships");
+	});
+
+	test("without a fallback the load-failure turn keeps the original prompt", async () => {
+		const run = await tracked("load-fails", { conversationId: "gone", prompt: "PLAIN" });
+		await run.handle.outcome;
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const text = blocks.find((b) => b.type === "text") as { text: string };
+		assert.equal(text.text, "PLAIN");
 	});
 });
 
@@ -1247,4 +1286,161 @@ describe("acp/driver silent tool failure (issue #18 F4)", () => {
 		await run.handle.outcome;
 		assert.ok(events.includes("acp-unknown-stop-reason"), `warn missing, got: ${events.join(",")}`);
 	});
+});
+
+describe("history-sync driver surface", () => {
+	test("outcome provenance: attempted + terminal on a clean turn", async () => {
+		const run = await tracked("happy", { prompt: "hi" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.promptAttempted, true);
+		assert.equal(outcome.promptTerminal, true);
+	});
+
+	test("outcome provenance: attempted without terminal on a deadline kill", async () => {
+		const run = await tracked("slow", { prompt: "hang", timeoutMin: 0.03 });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.equal(outcome.promptAttempted, true);
+		assert.equal(outcome.promptTerminal, false);
+	});
+
+	test("onSessionBound fires after establishment and before the prompt", async () => {
+		const order: string[] = [];
+		const run = await tracked("happy", {
+			prompt: "hi",
+			onSessionBound: (info) => {
+				order.push(`bound:${info.sessionId}:${info.fresh ? "fresh" : "warm"}`);
+			},
+			onBeforePrompt: (info) => {
+				order.push(`prompt:${info.sessionId}`);
+			},
+		});
+		await run.handle.outcome;
+		assert.deepEqual(order, [`bound:${SESSION_ID}:fresh`, `prompt:${SESSION_ID}`]);
+	});
+
+	test("onSessionLoadFailed fires before newSession and its rebuild input swaps in", async () => {
+		const seen: string[] = [];
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "BOUND-PROMPT",
+			onSessionLoadFailed: (info) => {
+				seen.push(info.sessionId);
+				return {
+					prompt: "REBUILD-PROMPT",
+					contextBlock: { uri: "urn:pi-bridge:history:v1", text: "REBUILD-CONTEXT" },
+				};
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.deepEqual(seen, ["gone"]);
+		assert.equal(outcome.status, "OK");
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const text = blocks.find((b) => b.type === "text") as { text: string };
+		assert.equal(text.text, "REBUILD-PROMPT");
+		const resource = blocks.find((b) => b.type === "resource") as { resource: { text: string } };
+		assert.equal(resource.resource.text, "REBUILD-CONTEXT");
+	});
+
+	test("a throwing load-failed hook fails the turn before any session/new", async () => {
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "hi",
+			onSessionLoadFailed: () => {
+				throw new Error("hook exploded");
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /hook exploded/);
+		const methods = sentRequests(run._logPath).map((r) => r.method);
+		assert.ok(!methods.includes("session/new"), "no session may be created after a failed hook");
+		assert.ok(!methods.includes("session/prompt"));
+	});
+
+	test("a throwing session-bound hook fails the turn before config", async () => {
+		const run = await tracked("happy", {
+			prompt: "hi",
+			onSessionBound: () => {
+				throw new Error("bound hook exploded");
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /bound hook exploded/);
+		const methods = sentRequests(run._logPath).map((r) => r.method);
+		assert.ok(!methods.includes("session/prompt"));
+	});
+
+	test("session-bound reports fresh true after a load failure creates a new session", async () => {
+		const seen: Array<{ sessionId: string; reused: boolean; fresh: boolean }> = [];
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "hi",
+			onSessionBound: (info) => {
+				seen.push(info);
+			},
+		});
+		await run.handle.outcome;
+		assert.deepEqual(seen, [{ sessionId: SESSION_ID, reused: false, fresh: true }]);
+	});
+
+	test("the sync rebuild swap carries its images", async () => {
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "BOUND-PROMPT",
+			onSessionLoadFailed: () => ({
+				prompt: "REBUILD-PROMPT",
+				images: [{ data: "PIXEL-A", mimeType: "image/png" }],
+			}),
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const image = blocks.find((b) => b.type === "image") as { data: string } | undefined;
+		assert.equal(image?.data, "PIXEL-A", "the rebuild input replaces the request images");
+	});
+
+	test("a returned rebuild wins over request.fallback", async () => {
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "BOUND-PROMPT",
+			fallback: { prompt: "FRESH-PROMPT" },
+			onSessionLoadFailed: () => ({ prompt: "REBUILD-PROMPT" }),
+		});
+		await run.handle.outcome;
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const text = blocks.find((b) => b.type === "text") as { text: string };
+		assert.equal(text.text, "REBUILD-PROMPT");
+	});
+
+	test("a void-returning load-failed hook keeps the digest fallback path", async () => {
+		const run = await tracked("load-fails", {
+			conversationId: "gone",
+			prompt: "BOUND-PROMPT",
+			fallback: { prompt: "FRESH-PROMPT" },
+			onSessionLoadFailed: () => {},
+		});
+		await run.handle.outcome;
+		const sent = sentRequests(run._logPath).filter((r) => r.method === "session/prompt");
+		const blocks = (sent[0]!.params as { prompt: Array<Record<string, unknown>> }).prompt;
+		const text = blocks.find((b) => b.type === "text") as { text: string };
+		assert.equal(text.text, "FRESH-PROMPT");
+	});
+
+	test("abort provenance: attempted true, terminal false", async () => {
+		const controller = new AbortController();
+		const started = runDriver("cancel", { prompt: "count", signal: controller.signal });
+		await new Promise((r) => setTimeout(r, 400));
+		controller.abort();
+		const run = await started;
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.aborted, true);
+		assert.equal(outcome.promptAttempted, true);
+		run.cleanup();
+	}, 10_000);
 });

@@ -50,8 +50,8 @@ export type Engine = "stream-json" | "acp";
  *  fall back here. Startup checks that the required agy CLI is available. */
 export const DEFAULT_ENGINE: Engine = "acp";
 export type AgyMode = "accept-edits" | "plan";
-export type ThinkingTier = "low" | "medium" | "high";
-export type BridgeTools = "none" | "mcp" | "all";
+export type ThinkingTier = "low" | "medium" | "high" | "xhigh";
+export type BridgeTools = "none" | "mcp" | "all" | "codemode";
 
 /** How ACP turns report token usage while Gate B stands (agy sends none).
  *  "estimate" (default): word-boundary regex over prompt/response/thought
@@ -105,6 +105,10 @@ export interface AgyConfig {
 	/** Official-server ACP engine options (used when engine = "acp"). */
 	acp: AcpConfig;
 	mode: AgyMode;
+	/** Fresh-conversation handoff style. "digest" (default) ships the bounded
+	 *  context digest; "sync" ships canonical history checkpoints (ACP only —
+	 *  stream-json keeps the digest path regardless). AGY_HANDOFF=sync opts in. */
+	handoff: "digest" | "sync";
 	/** Fail-closed kill switch for provider turns. ON = every provider turn
 	 *  is refused visibly: the agy CLI has no review-only enforcement on any
 	 *  path (probed 2026-10-07, upstream #1181: plan mode stages a plan and
@@ -176,6 +180,11 @@ export interface AgyConfig {
 	 *  message, and a conversation opened mid-session starts without prior
 	 *  pi-side context. */
 	digest: boolean;
+	/** Migration marker (issue #25): set once when a stale persisted
+	 *  digest:false from the pre-default-flip era is upgraded to the ON
+	 *  default. Presence keeps later deliberate `/agy digest off` choices
+	 *  from being re-migrated. */
+	digestMigrated?: boolean;
 	/** Prepend pi's composed system prompt (pi tool guidance + the global
 	 *  agent-dir AGENTS.md and ancestor AGENTS.md/CLAUDE.md) to the FIRST
 	 *  prompt of each fresh agy conversation.
@@ -216,6 +225,7 @@ export interface AgyConfig {
 const DEFAULTS: AgyConfig = {
 	engine: DEFAULT_ENGINE,
 	mode: "accept-edits",
+	handoff: "digest",
 	readOnly: false,
 	skipPermissions: true,
 	defaultModel: "gemini-4-hydrogen",
@@ -349,6 +359,22 @@ export function removeLegacyAcpBin(configFile: string = configPath()): boolean {
 	return true;
 }
 
+/** One-time handoff for upgraders from the digest-off default era (issue
+ *  #25): pre-flip saves baked digest:false into config.json as a bare
+ *  default, and silently keeping it makes mid-session handoffs lose
+ *  history. Runs at session_start (loadConfig stays side-effect free);
+ *  AGY_DIGEST env wins; the marker key keeps a deliberate post-migration
+ *  `/agy digest off` from being flipped back. Returns whether a stale
+ *  false was rewritten (caller warns once). */
+export function migrateStaleDigestDefault(configFile: string = configPath()): { migrated: boolean } {
+	const file = readConfigFile(configFile);
+	if (process.env.AGY_DIGEST !== undefined) return { migrated: false };
+	if (file.digestMigrated) return { migrated: false };
+	if (file.digest !== false) return { migrated: false };
+	saveConfig({ digest: true, digestMigrated: true }, configFile);
+	return { migrated: true };
+}
+
 /** Load config merged over defaults. Env vars override the file when set. */
 export function loadConfig(configFile: string = configPath()): AgyConfig {
 	let file: Partial<AgyConfig> = readConfigFile(configFile);
@@ -378,6 +404,12 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 				? "plan"
 				: "accept-edits";
 
+	const handoffRaw = (process.env.AGY_HANDOFF ?? file.handoff ?? DEFAULTS.handoff).toString().toLowerCase();
+	const handoff: "digest" | "sync" = handoffRaw === "sync" ? "sync" : handoffRaw === "digest" ? "digest" : (() => {
+		parseWarnings.push(`handoff: ${String(handoffRaw)} is not digest|sync; using ${DEFAULTS.handoff}`);
+		return DEFAULTS.handoff;
+	})();
+
 	const envPerm = process.env.AGY_SKIP_PERMISSIONS;
 	const skipPermissions =
 		envPerm !== undefined
@@ -403,7 +435,7 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 	const envThink = process.env.AGY_DEFAULT_THINKING;
 	const thinkRaw = String(envThink ?? file.defaultThinking ?? DEFAULTS.defaultThinking).toLowerCase();
 	const defaultThinking: ThinkingTier =
-		thinkRaw === "low" || thinkRaw === "high" ? thinkRaw : "medium";
+		thinkRaw === "low" || thinkRaw === "high" || thinkRaw === "xhigh" ? thinkRaw : "medium";
 
 	const askTool = process.env.AGY_ASK_TOOL !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_ASK_TOOL.toLowerCase())
@@ -415,9 +447,12 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 
 	const bridgeRaw = String(process.env.AGY_BRIDGE_TOOLS ?? file.bridgeTools ?? DEFAULTS.bridgeTools).toLowerCase();
 	const bridgeTools: BridgeTools =
-		bridgeRaw === "none" || bridgeRaw === "all" || bridgeRaw === "mcp"
+		bridgeRaw === "none" || bridgeRaw === "all" || bridgeRaw === "mcp" || bridgeRaw === "codemode"
 			? bridgeRaw
-			: DEFAULTS.bridgeTools;
+			: (() => {
+				parseWarnings.push(`bridgeTools: ${bridgeRaw} is not all|mcp|codemode|none; using ${DEFAULTS.bridgeTools}`);
+				return DEFAULTS.bridgeTools;
+			})();
 
 	// Extra long-window tool names for the bridge escalation (issue #6).
 	// Comma-separated in the env; junk entries and junk shapes are dropped,
@@ -495,6 +530,7 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 		engine,
 		acp,
 		mode,
+		handoff,
 		readOnly,
 		skipPermissions,
 		defaultModel,

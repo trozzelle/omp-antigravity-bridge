@@ -68,7 +68,7 @@ import { agyAuthenticationMessage } from "../src/agy-install.js";
 import { createAgySetupOffer } from "../src/agy-setup.js";
 import { ensureQueuedMessagesDefaults } from "../src/queued-messages.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { configPath, configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { configPath, configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, migrateStaleDigestDefault, parseCapMinutes, removeLegacyAcpBin, saveConfig, type AcpConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, ENGINE_SETTINGS_ROW_ID, engineSettingsRow, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { agyVersionVerdict, agyUpdateMessage, checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_ACP_VERSION, MIN_AGY_VERSION, MIN_GEMINI_DIR_VERSION, probeGeminiDirFlag, resolveStreamHomeMode } from "../src/agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "../src/agents.js";
@@ -117,6 +117,7 @@ import {
 	formatBridgeToolInfo,
 	parseBridgeCallRequest,
 	partitionBridgeTools,
+	codemodeCatalog,
 	serializeToolSchema,
 } from "../src/bridge-catalog.js";
 import { Type } from "typebox";
@@ -245,6 +246,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	let gateActive = false;
 	let managedAcpCleanupRan = false;
 	let legacyConfigCleanupRan = false;
+	let digestMigrationRan = false;
 	let legacyConfigCleanupFailed = false;
 	let legacyEnvAcpWarningShown = false;
 	let legacyFileAcpWarningShown = false;
@@ -681,6 +683,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		onNativeBackground: (info) => armConversationWatcher(info.conversationId, info.turnStartMs),
 		roster,
 		pendingCompactionHandoff,
+		hasActiveTool: (name) => pi.getActiveTools().includes(name),
 		engine,
 		log: fileLog.log.bind(fileLog),
 		// Same condition listTools uses to offer activate_skill.
@@ -874,6 +877,25 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				fileLog.log("legacy-acp-config-cleanup", { error: String(err) }, "error");
 			}
 		}
+		// One-time digest-default migration (issue #25): a config saved before
+		// the default flip carries digest:false as a bare default, silently
+		// keeping mid-session context handoffs off. Best-effort like the
+		// cleanup above: a failure must never block session_start.
+		if (mainSession && !digestMigrationRan) {
+			digestMigrationRan = true;
+			try {
+				const migrated = migrateStaleDigestDefault().migrated;
+				fileLog.log("digest-default-migration", { migrated }, migrated ? "info" : "debug");
+				if (migrated && ctx.hasUI) {
+					ctx.ui.notify(
+						"digest was still off from an older default; enabled it (keeps context visible on model switches). Keep it off with /agy digest off.",
+						"info",
+					);
+				}
+			} catch (err) {
+				fileLog.log("digest-default-migration", { error: String(err) }, "warn");
+			}
+		}
 		if (mainSession && !legacyEnvAcpWarningShown && process.env.AGY_ACP_BIN?.trim()) {
 			legacyEnvAcpWarningShown = true;
 			const msg = "AGY_ACP_BIN is set but no longer used; turns run \"agy acp\" from the CLI. Remove it from your shell config, then start a new terminal.";
@@ -987,14 +1009,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			// /mcp and pi.setActiveTools() update the same live catalog. ACP gets
 			// this endpoint through session/new or session/load; no global config write.
 			const mode = loadConfig().bridgeTools;
-			const { direct, proxied } = partitionBridgeTools(getBridgeTools());
-			const tools = direct.map((t) => ({
-				name: t.name,
-				description: t.description ?? t.name,
-				inputSchema: serializeToolSchema(t.parameters),
-			}));
-			if (mode !== "none" && proxied.length > 0) {
-				tools.push(bridgeToolInfoDef(proxied), bridgeCallToolDef());
+			const authorized = getBridgeTools();
+			const codemode = mode === "codemode" ? codemodeCatalog(authorized) : null;
+			const { direct, proxied } = partitionBridgeTools(authorized);
+			const directDefs = codemode
+				? codemode.direct
+				: direct.map((t) => ({
+						name: t.name,
+						description: t.description ?? t.name,
+						inputSchema: serializeToolSchema(t.parameters),
+					}));
+			const tools = directDefs;
+			const proxiedForInfo = codemode ? codemode.proxied : proxied;
+			if (mode !== "none" && proxiedForInfo.length > 0) {
+				tools.push(bridgeToolInfoDef(proxiedForInfo), bridgeCallToolDef());
 			}
 			if (skills.length > 0 && mode !== "none") {
 				tools.push({
@@ -1363,7 +1391,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${configPath()}`,
 		"",
-		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy steps inline|cards, /agy timeout <1-1440|off>, /agy patch-cleanup, /agy clear, /agy doctor",
+		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high|xhigh, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|codemode|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy steps inline|cards, /agy timeout <1-1440|off>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
 }
 
@@ -1385,7 +1413,7 @@ function currentConversationId(ctx: AgyCommandCtx, cmdCtx: ExtensionCommandConte
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|readonly on|off|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|steps inline|cards|timeout <1-1440|off>|patch-cleanup|clear]",
+			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|readonly on|off|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|xhigh|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|codemode|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|steps inline|cards|timeout <1-1440|off>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) ctx.setActiveUi(ui);
@@ -1506,6 +1534,9 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					"Antigravity doctor (no tokens spent)",
 					`  engine:        ${engine}`,
 					`  bridge:        ${config.bridgeTools}${port ? ` (port ${port})` : " (not running)"}`,
+					...(config.bridgeTools === "codemode" && !pi.getActiveTools().includes("codemode")
+						? ["  bridge:        codemode tool INACTIVE in pi; the engine sees an all-mode catalog without the codemode note. Activate with --tools codemode or the defaultTools setting."]
+						: []),
 					`  driver:        ${snap.state}${snap.pid ? ` pid=${snap.pid}` : ""}${snap.conversationId ? ` session=${snap.conversationId.slice(0, 8)}` : ""}`,
 					`  driver stats:  spawns=${snap.stats.spawns} turns=${snap.stats.turns} reused=${snap.stats.reused} recycles=${snap.stats.recycles}${snap.stats.lastRecycleReason ? ` (last: ${snap.stats.lastRecycleReason})` : ""}`,
 					`  sessions:      ${ctx.store.size} bound`,
@@ -1818,7 +1849,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				return;
 			}
 			if (sub === "bridge") {
-				if (val === "all" || val === "mcp" || val === "none") {
+				if (val === "all" || val === "mcp" || val === "none" || val === "codemode") {
 					const next = saveConfig({ bridgeTools: val });
 					ui?.notify(
 						ctx.getMcpPort() === null
@@ -1826,8 +1857,14 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 							: `bridge ${next.bridgeTools}. The active catalog and call guard update now; ACP may keep cached tool schemas until a session reloads or an agy process restarts (/reload applies it).`,
 						"info",
 					);
+					if (val === "codemode" && !pi.getActiveTools().includes("codemode")) {
+						ui?.notify(
+							"pi's codemode tool is inactive, so the engine sees an all-mode catalog and no codemode note. Activate it first: --tools codemode, the defaultTools setting, or /tools.",
+							"warning",
+						);
+					}
 				} else {
-					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|none\n  all: active non-builtin pi tools. mcp: active pi-mcp-adapter tools + skills. none: bridge off.`, "info");
+					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|codemode|none\n  all: active non-builtin pi tools. mcp: active pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active; without it this behaves like all). none: bridge off.`, "info");
 				}
 				return;
 			}
@@ -1920,11 +1957,11 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			}
 
 			if (sub === "thinking") {
-				if (val === "low" || val === "medium" || val === "high") {
+				if (val === "low" || val === "medium" || val === "high" || val === "xhigh") {
 					const next = saveConfig({ defaultThinking: val as ThinkingTier });
 					ui?.notify(`AskAntigravity default thinking set to ${next.defaultThinking}`, "info");
 				} else {
-					ui?.notify(`AskAntigravity thinking: ${loadConfig().defaultThinking} (fallback; callers may override per call)\nusage: /agy thinking low|medium|high`, "info");
+					ui?.notify(`AskAntigravity thinking: ${loadConfig().defaultThinking} (fallback; callers may override per call)\nusage: /agy thinking low|medium|high|xhigh|xhigh`, "info");
 				}
 				return;
 			}
@@ -2014,15 +2051,15 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			description:
 				"AskAntigravity one-shot delegation tool: thinking tier used when the call names none. Callers may override per call; this is only the fallback. Pro has no Medium; it falls back to nearest.",
 			currentValue: config.defaultThinking,
-			values: ["low", "medium", "high"],
+			values: ["low", "medium", "high", "xhigh"],
 		},
 		{
 			id: "bridge",
 			label: "Bridge tools",
 			description:
-				"Which pi tools the MCP bridge exposes to agy. all: every non-builtin tool (default). mcp: pi-mcp-adapter tools + skills. none: bridge off.",
+				"Which pi tools the MCP bridge exposes to agy. all: every non-builtin tool (default). mcp: pi-mcp-adapter tools + skills. codemode: the codemode tool + info/call pair only (pi's codemode tool must be active, e.g. --tools codemode). none: bridge off.",
 			currentValue: config.bridgeTools,
-			values: ["all", "mcp", "none"],
+			values: ["all", "mcp", "codemode", "none"],
 		},
 		{
 			id: "turn-cap",
