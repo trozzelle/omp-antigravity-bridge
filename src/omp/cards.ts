@@ -16,7 +16,8 @@
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
-import type { AgyConfig, NativeSteps } from "../config.js";
+import type { AgyConfig } from "../config.js";
+import type { NativeSteps } from "./config.js";
 import { POLL_TOOL_NAME, type NativeDisplayEvent } from "../provider.js";
 import type { PollRunData } from "../poll-fold.js";
 import { isOmpHost } from "./host.js";

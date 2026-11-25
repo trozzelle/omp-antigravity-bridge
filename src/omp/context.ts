@@ -35,6 +35,13 @@ export function isOmpCompactionSummary(text: string): boolean {
 	return OMP_COMPACTION_PREFIXES.some((prefix) => head.startsWith(prefix));
 }
 
+/** True for the text of any OMP summary message (compaction, handoff or
+ *  branch return): pi-side history, shipped through the digest, never part
+ *  of the prompt. */
+export function isOmpSummaryText(text: string): boolean {
+	return isOmpCompactionSummary(text) || (isOmpHost() && text.trimStart().startsWith(OMP_BRANCH_SUMMARY_PREFIX));
+}
+
 /** First `<tag>` … `</tag>` block whose tags sit alone on their lines, the way
  *  OMP's templates render them. */
 function lineBlock(text: string, tag: string): string | undefined {
@@ -155,8 +162,7 @@ function messageText(content: unknown): string {
 /** True for a user-like message OMP generated as a summary (compaction,
  *  handoff or branch return) rather than one the user or a hook sent. */
 function isSummaryMessage(message: unknown): boolean {
-	const text = messageText(contentOf(message)).trimStart();
-	return isOmpCompactionSummary(text) || (isOmpHost() && text.startsWith(OMP_BRANCH_SUMMARY_PREFIX));
+	return isOmpSummaryText(messageText(contentOf(message)));
 }
 
 /** Index where the trailing run of user-like messages starts (OMP often

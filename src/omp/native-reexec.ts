@@ -4,6 +4,7 @@
 // directories; OMP has no `ls` and its `find` is semantic search, so name
 // search goes to `glob {path, pattern}` (pattern scoped under path).
 import type { NativeToolCall } from "../native-tools.js";
+import { isOmpHost } from "./host.js";
 
 /** Windows drive root (`C:\` or `C:/`): its colon is not a selector. */
 const DRIVE_ROOT = /^[A-Za-z]:[\\/]/;
@@ -21,6 +22,14 @@ function rangedPath(path: string, offset: unknown, limit: unknown): string | und
  *  bare `*.ts` under `path` to direct children only. */
 function recursivePattern(pattern: string): string {
 	return pattern.includes("/") ? pattern : `**/${pattern}`;
+}
+
+/** Arguments of a re-exec tool call: OMP builtins take no `reasoning`
+ *  argument (and glob rejects unknown keys), so it is dropped under OMP. */
+export function ompReexecArgs<T extends { reasoning?: unknown }>(args: T): Omit<T, "reasoning"> | T {
+	if (!isOmpHost()) return args;
+	const { reasoning: _reasoning, ...rest } = args;
+	return rest;
 }
 
 /** Map a pi builtin re-exec call onto OMP's builtins. Undefined means the

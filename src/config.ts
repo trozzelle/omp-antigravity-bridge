@@ -15,7 +15,7 @@ import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { normalizeAgyAgentName } from "./agents.js";
 import { writeJsonAtomic } from "./atomic-write.js";
-import { isOmpHost } from "./omp/host.js";
+import { defaultGateAskMode, loadOmpAcp, saveOmpAcp, type OmpGateAskMode } from "./omp/config.js";
 
 /** pi's agent dir (env override PI_CODING_AGENT_DIR, else ~/.pi/agent); every
  *  bridge-owned path derives from it so isolated or rebranded pi homes keep
@@ -59,22 +59,6 @@ export type BridgeTools = "none" | "mcp" | "all";
  *  "off": keep zero-usage. Real server usage (usageSeen latch) always wins. */
 export type UsageEstimate = "estimate" | "direct" | "off";
 
-/** OMP only: where ACP native tool steps (agy's own read_file, run_command,
- *  edits) show. "inline" (default): one trace line per step (plus edit
- *  diffs) in the reply's thinking stream, in the order the steps ran.
- *  "cards": separate display cards; OMP queues a custom message sent
- *  mid-reply as steering, so they land below the finished answer. pi always
- *  draws cards (the key is absent there). */
-export type NativeSteps = "inline" | "cards";
-
-/** Narrow a raw nativeSteps value (file, env, picker) to the known set,
- *  case-insensitive; anything else is undefined. Shared by loadConfig and
- *  saveConfig so the two can never drift. */
-export function toNativeSteps(raw: unknown): NativeSteps | undefined {
-	const value = typeof raw === "string" ? raw.toLowerCase() : undefined;
-	return value === "inline" || value === "cards" ? value : undefined;
-}
-
 /** How the approval gate activates (docs/TODO.md section 2.5).
  *
  *  "auto" (default): OFF until a third-party pi permission extension is
@@ -89,17 +73,9 @@ export function toNativeSteps(raw: unknown): NativeSteps | undefined {
 export type GateMode = "auto" | "shadow" | "dedicated" | "off";
 
 /** Fallback decision when no extension blocked a gated call: "ask" uses
- *  ctx.ui.confirm on pi and forces an OMP approval prompt on OMP (headless
- *  = deny, fail-closed), "allow" auto-approves, "deny" auto-rejects.
- *  "inherit" (OMP default): no bridge policy, OMP's tools.approvalMode /
- *  tools.approval decide. Under pi "inherit" reads as "ask". */
-export type GateAskMode = "ask" | "allow" | "deny" | "inherit";
-
-/** Default approvals.mode: OMP defers to its own approval mode; pi keeps
- *  the bridge confirm. */
-export function defaultGateAskMode(): GateAskMode {
-	return isOmpHost() ? "inherit" : "ask";
-}
+ *  ctx.ui.confirm (headless = deny, fail-closed), "allow" auto-approves,
+ *  "deny" auto-rejects. */
+export type GateAskMode = "ask" | "allow" | "deny" | OmpGateAskMode;
 
 export interface GateConfig {
 	gateMode: GateMode;
@@ -121,10 +97,6 @@ export interface AcpConfig {
 	 *  recover if the server process itself has a wedged socket.
 	 *  Env AGY_ACP_SESSION_RETRY wins over the file. */
 	sessionRetryOnTimeout: boolean;
-	/** OMP only (absent under pi): native step display, see NativeSteps.
-	 *  Env AGY_NATIVE_STEPS wins over the file. Takes effect on the next
-	 *  native step. */
-	nativeSteps?: NativeSteps;
 }
 
 export interface AgyConfig {
@@ -511,7 +483,7 @@ export function loadConfig(configFile: string = configPath()): AgyConfig {
 		? ["1", "true", "on"].includes(envSessionRetry.toLowerCase())
 		: parseBoolish(fileAcp.sessionRetryOnTimeout, "acp.sessionRetryOnTimeout", DEFAULTS.acp.sessionRetryOnTimeout, parseWarnings);
 	const acp: AcpConfig = { usageEstimate, sessionTimeoutMs, sessionRetryOnTimeout };
-	if (isOmpHost()) acp.nativeSteps = toNativeSteps(process.env.AGY_NATIVE_STEPS ?? fileAcp.nativeSteps) ?? "inline";
+	Object.assign(acp, loadOmpAcp(fileAcp));
 
 	// Custom agent for stream-json turns (--agent). Env wins over the file
 	// (same pattern as mode). Normalized (trim/cap/control-strip); an empty
@@ -586,10 +558,7 @@ export function saveConfig(patch: ConfigPatch, configFile: string = configPath()
 				?? parseBoolishLiteral(fileAcp.sessionRetryOnTimeout)
 				?? DEFAULTS.acp.sessionRetryOnTimeout,
 	};
-	// Persist only a value the user chose, normalized: an unset key keeps
-	// tracking the default, junk is dropped.
-	const nativeSteps = isOmpHost() ? toNativeSteps(patchAcp?.nativeSteps ?? fileAcp.nativeSteps) : undefined;
-	if (nativeSteps) mergedAcp.nativeSteps = nativeSteps;
+	Object.assign(mergedAcp, saveOmpAcp(patchAcp, fileAcp));
 	// The DEFAULTS 0 is a load-time placeholder (defaultTurnTimeoutMin resolves
 	// per TTY state); persisting it would flip absence into "cap disabled"
 	// (parseCapMinutes reads 0 as off) on the next load.
