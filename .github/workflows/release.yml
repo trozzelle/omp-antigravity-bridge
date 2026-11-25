@@ -1,9 +1,7 @@
 name: Release
 
-# Releases every pull request merged into main, once CI has passed on the
-# merge commit. Upstream syncs keep their own path (promote-sync.yml): it
-# pushes main with GITHUB_TOKEN, which starts no CI run, so a promotion never
-# reaches this workflow, and sync/* heads are skipped here besides.
+# Releases every pull request merged into main, upstream syncs included
+# (sync-upstream.yml opens those), once CI has passed on the merge commit.
 #
 # workflow_run only fires for this file as it exists on main.
 on:
@@ -16,7 +14,7 @@ permissions:
   contents: write
   pull-requests: read
 
-# Shared with promote-sync.yml: both pick the next v<version>-omp.<N> tag.
+# One release at a time: each picks the next v<version>-omp.<N> tag.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -61,10 +59,6 @@ jobs:
             --jq "[.[] | select(.merged_at != null and .base.ref == \"main\" and .merge_commit_sha == \"${SHA}\")][0] // empty")"
           [ -n "$pr_json" ] || skip "not the merge of a pull request into main"
           pr="$(jq -r '.number' <<<"$pr_json")"
-          head_ref="$(jq -r '.head.ref' <<<"$pr_json")"
-          case "$head_ref" in
-            sync/*) skip "#${pr} is an upstream sync; promote-sync.yml releases those" ;;
-          esac
           if jq -e 'any(.labels[]; .name == "skip-release")' <<<"$pr_json" >/dev/null; then
             skip "#${pr} is labelled skip-release"
           fi

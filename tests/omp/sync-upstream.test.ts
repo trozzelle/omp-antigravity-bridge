@@ -136,7 +136,7 @@ afterEach(() => {
 	fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-// Each case runs real git (clone, subtree split, rebase): allow slow CI disks.
+// Each case runs real git (clone, subtree split, merge): allow slow CI disks.
 describe("sync-upstream.sh", { timeout: 30_000 }, () => {
 	it("reports up-to-date and creates no branch when upstream has not moved", () => {
 		const r = runSync();
@@ -146,7 +146,7 @@ describe("sync-upstream.sh", { timeout: 30_000 }, () => {
 		expect(git(fork, "rev-parse", "upstream")).toBe(splitOf(mono));
 	});
 
-	it("rebases the patch stack onto a new upstream commit", () => {
+	it("merges a new upstream commit into main without rewriting it", () => {
 		commitUpstream("feat: add b", {
 			"src/b.ts": "export const b = true;\n",
 			"CHANGELOG.md": changelog(["1.1.0", "1.0.0"]),
@@ -159,7 +159,11 @@ describe("sync-upstream.sh", { timeout: 30_000 }, () => {
 		expect(r.code, r.stderr).toBe(0);
 		expect(r.out).toMatchObject({ status: "synced", sha: short, branch: `sync/${short}`, upstream_sha: split });
 		expect(git(fork, "rev-parse", "upstream")).toBe(split);
-		expect(git(fork, "log", "--format=%s", `upstream..sync/${short}`).split("\n")).toEqual([
+		const mainSha = git(fork, "rev-parse", "main");
+		// A merge commit whose parents are main and upstream: main's history is kept.
+		expect(git(fork, "rev-list", "--parents", "-n", "1", `sync/${short}`).split(" ").slice(1)).toEqual([mainSha, split]);
+		expect(git(fork, "log", "-1", "--format=%s", `sync/${short}`)).toBe(`sync: merge upstream 1.0.0 (${short})`);
+		expect(git(fork, "log", "--no-merges", "--format=%s", `upstream..sync/${short}`).split("\n")).toEqual([
 			"omp: patch greeting",
 			"omp: packaging",
 		]);
@@ -185,8 +189,24 @@ describe("sync-upstream.sh", { timeout: 30_000 }, () => {
 		expect(r.out.status).toBe("synced");
 		expect(r.out.upstream_version).toBe("1.1.0");
 		expect(r.out.base_version).toBe("1.0.0");
+		expect(r.stderr).toContain("re-applying overrides");
 		expect(JSON.parse(git(fork, "show", `sync/${short}:package.json`))).toEqual(applyOverrides(JSON.parse(bumped)));
-		expect(git(fork, "log", "--format=%s", `upstream..sync/${short}`)).toContain("omp: packaging");
+		expect(git(fork, "log", "-1", "--format=%s", `sync/${short}`)).toBe(`sync: merge upstream 1.1.0 (${short})`);
+	});
+
+	it("normalizes package.json through the overrides after a merge with no package.json conflict", () => {
+		// Upstream adds a dependency without touching the lines the overrides
+		// rewrite, so git merges it cleanly; the result must still be exactly
+		// the overrides applied to upstream's file.
+		const pkg = JSON.parse(upstreamPackageJson("1.0.0", { "left-pad": "^1.3.0" }));
+		commitUpstream("chore: add left-pad", { "package.json": upstreamPackageJson("1.0.0", { "left-pad": "^1.3.0" }) });
+		const short = splitOf(mono).slice(0, 7);
+
+		const r = runSync();
+
+		expect(r.code, r.stderr).toBe(0);
+		expect(JSON.parse(git(fork, "show", `sync/${short}:package.json`))).toEqual(applyOverrides(pkg));
+		expect(git(fork, "status", "--porcelain")).toBe("");
 	});
 
 	it("keeps the fork's README when upstream edits its own", () => {
@@ -205,10 +225,9 @@ describe("sync-upstream.sh", { timeout: 30_000 }, () => {
 		expect(r.stderr).toContain("keeping the fork's README");
 		expect(git(fork, "show", `sync/${short}:README.md`)).toBe(forkReadme.trimEnd());
 		expect(git(fork, "show", `upstream:README.md`)).toContain("now longer");
-		expect(git(fork, "log", "--format=%s", `upstream..sync/${short}`)).toContain("omp: fork readme");
 	});
 
-	it("stops on any other conflict, names the failing patch, and leaves the repo clean", () => {
+	it("stops on any other conflict, names the fork commits behind it, and leaves the repo clean", () => {
 		commitUpstream("fix: new greeting", {
 			"src/a.ts": "export const greeting = 'hi';\nexport const answer = 42;\n",
 		});
@@ -217,13 +236,44 @@ describe("sync-upstream.sh", { timeout: 30_000 }, () => {
 
 		expect(r.code).toBe(3);
 		expect(r.out.status).toBe("conflict");
-		expect(r.out.failing_commit).toMatch(/^[0-9a-f]{7,} omp: patch greeting$/);
+		expect(r.out.fork_commits).toMatch(/^[0-9a-f]{7,} omp: patch greeting$/);
 		expect(r.out.conflict_files).toBe("src/a.ts");
-		expect(r.stderr).toContain("CONFLICT replaying");
+		expect(r.stderr).toContain("CONFLICT merging");
 		expect(git(fork, "branch", "--list", "sync/*")).toBe("");
 		expect(git(fork, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
 		expect(git(fork, "status", "--porcelain")).toBe("");
-		expect(fs.existsSync(path.join(fork, ".git/rebase-merge"))).toBe(false);
+		expect(fs.existsSync(path.join(fork, ".git/MERGE_HEAD"))).toBe(false);
+	});
+
+	it("keeps main's history across consecutive syncs: the second merge builds on the first", () => {
+		commitUpstream("feat: add b", { "src/b.ts": "export const b = true;\n" });
+		const first = runSync();
+		expect(first.code, first.stderr).toBe(0);
+		// The sync pull request is merged with a merge commit: main advances to the branch.
+		git(fork, "merge", "-q", "--ff-only", first.out.branch);
+		commitUpstream("feat: add c", { "src/c.ts": "export const c = true;\n" });
+
+		const second = runSync();
+
+		expect(second.code, second.stderr).toBe(0);
+		expect(second.out.status).toBe("synced");
+		expect(second.out.base_sha).toBe(first.out.upstream_sha);
+		expect(git(fork, "merge-base", "--is-ancestor", first.out.branch, second.out.branch)).toBe("");
+		expect(git(fork, "show", `${second.out.branch}:src/c.ts`)).toContain("export const c");
+	});
+
+	it("refuses to sync when main no longer contains upstream (a squash-merged sync)", () => {
+		commitUpstream("feat: add b", { "src/b.ts": "export const b = true;\n" });
+		const first = runSync();
+		expect(first.code, first.stderr).toBe(0);
+		// Squash the sync into main: same tree, but upstream is not an ancestor.
+		git(fork, "merge", "-q", "--squash", first.out.branch);
+		git(fork, "commit", "-q", "-m", "sync (squashed)");
+
+		const r = runSync();
+
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("main does not contain upstream");
 	});
 
 	it("refuses an upstream whose history was rewritten", () => {

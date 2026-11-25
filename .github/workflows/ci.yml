@@ -7,7 +7,7 @@ on:
   # sync-upstream.yml dispatches this workflow on each sync/<sha> branch:
   # pushes made with GITHUB_TOKEN trigger no push/pull_request runs, but
   # workflow_dispatch runs do, and their check runs attach to the branch head
-  # commit that promote-sync.yml verifies.
+  # commit and show on the sync pull request.
   workflow_dispatch:
 
 permissions:
