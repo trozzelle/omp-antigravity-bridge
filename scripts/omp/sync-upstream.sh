@@ -125,10 +125,20 @@ emit upstream_sha "$split"
 emit sha "$short"
 emit main_sha "$main_sha"
 
-git merge-base --is-ancestor "$old_upstream" main ||
-	die "main does not contain upstream ${old_upstream:0:7}; was a sync pull request squash- or rebase-merged? Merge upstream into main by hand (git merge upstream) before syncing again"
+# A sync branch already on the remote (pushed by hand after resolving a
+# conflict, or left by an earlier run) is reported below, not rebuilt.
+pending=0
+if [[ "${FORCE:-}" != "1" ]] && git show-ref --verify --quiet "refs/remotes/$SYNC_REMOTE/$branch"; then
+	pending=1
+fi
 
-if [[ "$split" == "$old_upstream" ]]; then
+# main must contain upstream, except while a sync is pending: resolving a
+# conflict by hand pushes upstream ahead of main together with the sync branch,
+# and main catches up when that branch's pull request merges.
+if ! git merge-base --is-ancestor "$old_upstream" main; then
+	[[ $pending -eq 1 && "$split" == "$old_upstream" ]] ||
+		die "main does not contain upstream ${old_upstream:0:7}; was a sync pull request squash- or rebase-merged? Merge upstream into main by hand (git merge upstream) before syncing again"
+elif [[ "$split" == "$old_upstream" ]]; then
 	emit status up-to-date
 	echo "sync-upstream: upstream unchanged at $short; main already contains it" >&2
 	exit 0
@@ -157,10 +167,9 @@ git show upstream:CHANGELOG.md 2>/dev/null |
 		started { print }
 	' >"$out_dir/changelog-delta.md" || true
 
-# A branch already on the remote (pushed by hand after resolving a conflict, or
-# left by an earlier run) is reported, not rebuilt. The result keys above are
+# A pending sync branch is reported, not rebuilt. The result keys above are
 # emitted first so the caller can still open its pull request.
-if [[ "${FORCE:-}" != "1" ]] && git show-ref --verify --quiet "refs/remotes/$SYNC_REMOTE/$branch"; then
+if [[ $pending -eq 1 ]]; then
 	emit status pending
 	emit branch "$branch"
 	echo "sync-upstream: $SYNC_REMOTE/$branch already exists (set FORCE=1 to rebuild)" >&2
