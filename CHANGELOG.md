@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.15.1] - 2026-11-25
+
+### Fixed
+
+- A user message typed while a bridge tool round-trip was parked no longer vanishes (Baluard session 2026-11-25 11:54): pi's steering poll delivered it into the transcript, but the continuation pass re-attached to the parked turn without sending any new user event, so the model answered the pre-park work, the queue stayed empty, and the turn ended with the message sitting unanswered. The provider now late-delivers steered messages to the same conversation once the parked turn settles OK, combined with any stranded escalated results in a single prompt (image blocks ride along; the plain no-steer continuation still starts no run). Delivery floor is a per-session dispatch cursor, not the first-pending-toolResult anchor, so a steer from an EARLIER park of a park chain (the normal shape under the approval gate) is still found; a failed or unbindable late start holds both the watermark and the boundary fingerprint at the first undelivered message so the digest re-offers the steer instead of resetting to full history (delivery invariant: claim only what reached agy); the sync handoff contract invalidates on that failure so its checkpoint cannot claim it either; a steer leads the fresh dispatch when the parked turn is already gone (dead handle) instead of an error stop; and an oversized steer is visibly truncated on stream-json instead of silently dropped (issue #2).
+
+## [1.15.0] - 2026-11-24
+
+### Added
+
+- Opt-in canonical-history handoff (`config.handoff: "sync"`, env `AGY_HANDOFF=sync`; ACP-only, digest stays the default): a rolling sha256 prefix chain over the projected transcript drives a per-turn plan, so warm sessions ship only the owed delta as an `urn:pi-bridge:history:v1` block and a session/load failure re-plans as a lossless rebuild (the settle re-arms; no blind turn, no double rebuild). The settle persists the zeroed contract plus the confirmed checkpoint, the churn gate falls back to digest after 3 consecutive `changed-prefix` rebuilds (the latch rides the record so digest turns keep it), and the framed delta hard-fails past the 3 MiB outbound frame budget (the engine silently truncates resources near 3.82 MiB, so bigger frames would checkpoint content it never read). Mode flips are safe both directions. Design: `docs/designs/history-sync-mode.md` (including implementation deviations); live proof: `scripts/smoke-handoff.mjs` scenario 4 and `scripts/probe-acp-frame.mjs` on agy 1.5.16.
+- Codemode-only bridge mode (`/agy bridge codemode`, env `AGY_BRIDGE_TOOLS=codemode`): the engine's catalog shrinks to pi's `codemode` tool (the one direct tool) plus `bridge_tool_info`/`bridge_call_tool` and `bridge_poll_result`, so multi-step work runs as scripts pi-side and nested tool calls never re-enter the engine's context (spike: `scripts/probe-codemode.mjs`, one wire call carried two nested sandbox calls; session/load on a fresh engine process kept the registration; ~2.5k input tokens over a plain baseline turn; live round trip through a real pi session: `scripts/smoke-codemode.mjs` - the engine called the advertised codemode tool and its script executed pi-side read/write on a planted secret, proven end to end). Prerequisite: pi's codemode tool must be ACTIVE (`--tools codemode`, the `defaultTools` setting, or `/tools`) - without it the mode degrades to `all` behavior; the flip warns and `/agy doctor` reports it. The provider system prompt gains a codemode note redirecting the file-tool instruction into scripts, shipped only when the catalog actually has the tool (`buildFullPrompt` `codemodeOnly` gated on live tool visibility).
+
+### Changed
+
+- The provider tool-priority note's bridge-tool enumeration names the real pi tools (`write`, `bash`) instead of the nonexistent `execute`: fresh conversations get the corrected text, and each stream-json staged agent re-stages under a new content hash (harmless one-time cache bust per conversation).
+- Native xhigh thinking tier: the catalog splits `gemini-4-{hydrogen,neon}-xhigh` slugs into base + tier, pi's `xhigh` thinking level passes through to the engine when the base lists it (clamps to the nearest tier below otherwise; pi's own clamp now resolves `max` to xhigh on bases that ship it, so provider turns get the top tier - the direct `max`→`high` clamp remains only in `toAgyEffort` for direct callers), the model toggle shows the xhigh stop only for bases that ship it, and `/agy thinking` plus the AskAntigravity `thinking` param and the config default (`defaultThinking` / `AGY_DEFAULT_THINKING`) accept `xhigh` end to end (probe: `scripts/probe-xhigh.mjs`, agy 1.5.16 accepted the qualified xhigh slug). Requires `@estebanforge/pi-ask-shared` `^0.1.7` (floor bump: the resolver vocabulary widens first; publish shared before this package).
+
+## [1.14.0] - 2026-11-24
+
+### Fixed
+
+- One oversized tool result no longer erases earlier turns from the context digest (#25): tool-result bodies are capped per part (head + tail with an elision marker) before the delta budget is spent, so a single >8KB read/bash result can no longer starve the mid-session handoff.
+- Assistant tool calls now render into the digest (`[tool call: name(args)]`, args capped and redacted) instead of vanishing with their text blocks; a turn carrying only tool calls ships too, where it used to be skipped entirely (#25).
+- A config.json saved before the digest-default flip no longer silently keeps the digest off (#25): `migrateStaleDigestDefault` at session start flips the stale `digest: false` to the shipped ON default once, writes a `digestMigrated` marker so later deliberate `/agy digest off` survives, and respects `AGY_DIGEST`. One-time ambiguity window: an `/agy digest off` chosen between the flip commit and this release migrates to ON once (the toast explains how to keep it off).
+- A bound turn whose digest build fails the stream-json byte cap no longer permanently loses that delta (#25 follow-up): the settle write holds the watermark when nothing shipped, so the window re-offers on the next turn (the re-offer re-includes the prior turn's user prompt, which already reached the conversation as that turn's prompt - a small duplicate, never a loss); partial renders (budget cut old turns) still advance and now log the skipped span (`digest` event, AGY_DEBUG-visible) for cap-deciding data.
+- An ACP `session/load` failure that silently falls back to a fresh agy conversation no longer ships a blind turn (#25): bound turns carry an as-if-fresh fallback variant (system prompt gate open, full `bound: false` digest) that the driver swaps in at the load-failure point; the variant honors the same `/agy digest off` and `/agy system-prompt off` choices as the normal turn, and with both off no variant is built at all. stream-json cannot detect its stale-id drop, so the fallback is ACP-only.
+
+### Changed
+
+- ACP digest cap raised 8k to 24k chars after a live probe (scripts/probe-acp-context.mjs): a 120k-char embeddedContext block shipped and the model recalled needle strings at both block extremities exactly (end needle on the digest turn; start needle again on a bound follow-up with no block re-sent, proving the block persists server-side), so 24k is transport-safe and shrinks the newest-first partial-render hole. stream-json keeps its 8k inline clamp under the ~25KB prompt cap.
+- AskAntigravity model param description now names the configured default (gemini-4-hydrogen) and the Gemini 4 lines. Removed the legacy flash/pro examples: callers read them as the house default, hard-coded `model: "flash"`, and skipped the hydrogen default entirely (flash resolves to the deprecated 3.x era).
+
 ## [1.13.3] - 2026-11-23
 
 ### Fixed

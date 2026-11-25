@@ -293,7 +293,10 @@ export class AcpDriver implements TurnDriver {
 	}
 
 	async #executeTurn(turn: ActiveTurn): Promise<void> {
-		const request = turn.request;
+		// Reassigned when a load failure applies the request's fresh-mode
+		// fallback (issue #25): everything after session setup must read the
+		// swapped variant.
+		let request = turn.request;
 		const conn = await this.#ensureConnection(request);
 		let reused = false;
 
@@ -332,6 +335,16 @@ export class AcpDriver implements TurnDriver {
 					sessionId: request.conversationId,
 					message: err instanceof Error ? err.message : String(err),
 				});
+				// Sync hook BEFORE the fresh creation: the provider invalidates
+				// and re-prepares without an orphaned session (a hook failure
+				// after newSession would strand the created conversation).
+				let rebuild: { prompt: string; contextBlock?: { uri: string; text: string }; images?: Array<{ data: string; mimeType: string }> } | undefined;
+				try {
+					rebuild = request.onSessionLoadFailed?.({ sessionId: request.conversationId, error: err }) || undefined;
+				} catch (hookErr) {
+					this.#failTurn(turn, `ACP session-load hook failed: ${describe(hookErr)}`);
+					return;
+				}
 				try {
 					const created = await conn.newSession(request.cwd);
 					turn.sessionId = created.sessionId;
@@ -340,12 +353,44 @@ export class AcpDriver implements TurnDriver {
 					this.#failTurn(turn, `ACP session failed: ${describe(err2)}`);
 					return;
 				}
+				if (rebuild) {
+					// The recreated conversation holds nothing: swap in the sync
+					// rebuild input — a fresh conversation needs the full history
+					// block and the complete image set.
+					this.#log("session-load-fallback-applied", { sessionId: request.conversationId, source: "sync-rebuild" });
+					request = {
+						...request,
+						prompt: rebuild.prompt,
+						contextBlock: rebuild.contextBlock,
+						...(rebuild.images ? { images: rebuild.images } : {}),
+					};
+					turn.request = request;
+				} else if (request.fallback) {
+					// Digest mode: swap in the as-if-fresh variant the provider
+					// prebuilt (system prompt + full bound:false digest) instead
+					// of shipping the bound-mode prompt blind.
+					this.#log("session-load-fallback-applied", { sessionId: request.conversationId, source: "digest-fallback" });
+					request = { ...request, prompt: request.fallback.prompt, contextBlock: request.fallback.contextBlock };
+					turn.request = request;
+				}
 			} else {
 				this.#failTurn(turn, `ACP session failed: ${describe(err)}`);
 				return;
 			}
 		}
 		if (turn.closed) return;
+
+		// Binding hook before config apply: the provider persists the binding
+		// before model config/prompt, so a later failure cannot leave state
+		// that claims a session the transport never confirmed. fresh compares
+		// ids, not request.conversationId: a load-failure fresh session must
+		// report fresh despite the stale request id.
+		try {
+			await request.onSessionBound?.({ sessionId: turn.sessionId, reused, fresh: turn.sessionId !== request.conversationId });
+		} catch (err) {
+			this.#failTurn(turn, `ACP session-bound hook failed: ${describe(err)}`);
+			return;
+		}
 
 		// Config: model + mode. Model failure fails the turn (wrong-model turns
 		// are a parity break); mode failure is best-effort (auto policy makes
@@ -368,6 +413,14 @@ export class AcpDriver implements TurnDriver {
 		// Prompt. Updates stream through the connection's onUpdate callback.
 		try {
 			// Nothing to cancel before the prompt RPC exists; see promptStarted.
+			// attempted stamps only after the write-ahead hook passed: a hook
+			// failure means the prompt never went out (unconfirmed, not unknown).
+			try {
+				await request.onBeforePrompt?.({ sessionId: turn.sessionId });
+			} catch (err) {
+				this.#failTurn(turn, `ACP before-prompt hook failed: ${describe(err)}`);
+				return;
+			}
 			turn.promptStarted = true;
 			const result = await this.#sessionStep(
 				conn,
@@ -844,6 +897,11 @@ export class AcpDriver implements TurnDriver {
 
 	#settle(turn: ActiveTurn, outcome: TurnOutcome): void {
 		if (turn.closed) return;
+		// Provenance for the sync settle contract, populated once here so the
+		// failTurn, connection-exit and abort paths all carry it (??= keeps any
+		// explicitly set value).
+		outcome.promptAttempted ??= turn.promptStarted;
+		outcome.promptTerminal ??= turn.sawResult;
 		const flushed = turn.response.flush();
 		if (flushed) {
 			turn.textDeltas += 1;

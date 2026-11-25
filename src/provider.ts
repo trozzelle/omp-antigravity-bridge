@@ -37,8 +37,10 @@ import { SubagentRoster } from "./subagent-roster.js";
 import { clampOverflowUsage, toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
 import { toAgyEffort, type AgyModelEntry } from "./models.js";
+import { AcpHistorySync, OutboundFrameBudgetError } from "./acp/history-sync.js";
 import { SessionStore } from "./sessions.js";
 import { detectQuotaNotice, quotaErrorMessage } from "./quota-notice.js";
+import { redactText } from "./redact.js";
 import { loadConfig } from "./config.js";
 import { GATE_MARKER, mapNativeToShadow, stripMarkerFields } from "./approval-gate.js";
 import type { ApprovalDecision, ApprovalPayload, ApprovalParkApi } from "./mcp-server.js";
@@ -94,6 +96,15 @@ export function _resetObservationalMemoryWarnedForTesting(): void {
  *  staging (one dir per body) keeps sibling conversations from overwriting
  *  each other's files. */
 const stagedAgentByConversation = new Map<string, string>();
+
+/** Per-session mid-park steering cursor: the context length the current turn
+ *  was dispatched with, and the transcript index past the last steer actually
+ *  delivered to agy. The moving first-pending-toolResult anchor alone misses
+ *  a steer that landed during an EARLIER park of a park chain: the anchor
+ *  moves to the newer park's toolResult, which sits after the steer, and the
+ *  settle claims it undelivered. Absent (pi restart mid-turn) the provider
+ *  falls back to the anchor rule. */
+const steerCursors = new Map<string, { dispatchedAt: number; deliveredThrough: number }>();
 
 /** Zero-usage helper. agy doesn't expose token counts; pi's cost math gets
  *  zeros (we're not billing through this provider). */
@@ -252,7 +263,14 @@ export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
  *  the user's machine must go through the bridge. Rides the systemPrompt
  *  gate: the note ships only when the system prompt ships. */
 export const TOOL_PRIORITY_NOTE =
-	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, execute). Image files are visible to you: the Pi Bridge read tool returns image files as visible images (png, jpg, webp, gif, bmp), so never claim you cannot view images. Extension Pi tools not declared directly are listed in bridge_tool_info; call bridge_tool_info to inspect their description and schema, then call bridge_call_tool to run them. When a bridge call answers STILL RUNNING, poll bridge_poll_result before doing other work: until you poll, the result (including any image) stays undelivered to you. Delegate subagent work the same way: when pi's tool list includes a delegation tool (for example subagent, Agent, agent_spawn, agent_wait, or subagent_run), always delegate through it and never through the native invoke_subagent, run_subagent, or manage_subagents; use native ones only if no pi delegation tool is listed, because native subagents run inside agy and are invisible to pi and anything watching it. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. Your turn ends when your reply ends, and pi never waits for agy's own wake-ups: never let a native run_command go to the background (keep WaitMsBeforeAsync at 0 for foreground runs and native commands under two minutes, since longer foreground waits hit pi's idle cap and kill the turn; wrap long commands in timeout and run anything longer through the Pi Bridge bash tool, which keeps it inside your turn, and poll bridge_poll_result if it answers STILL RUNNING) and never use the native schedule tool or timers. A task left running when you reply outlives your turn: its wake-up cannot call Pi Bridge tools, and a delegated subagent session is already gone when it fires.]";
+	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, write, bash). Image files are visible to you: the Pi Bridge read tool returns image files as visible images (png, jpg, webp, gif, bmp), so never claim you cannot view images. Extension Pi tools not declared directly are listed in bridge_tool_info; call bridge_tool_info to inspect their description and schema, then call bridge_call_tool to run them. When a bridge call answers STILL RUNNING, poll bridge_poll_result before doing other work: until you poll, the result (including any image) stays undelivered to you. Delegate subagent work the same way: when pi's tool list includes a delegation tool (for example subagent, Agent, agent_spawn, agent_wait, or subagent_run), always delegate through it and never through the native invoke_subagent, run_subagent, or manage_subagents; use native ones only if no pi delegation tool is listed, because native subagents run inside agy and are invisible to pi and anything watching it. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. Your turn ends when your reply ends, and pi never waits for agy's own wake-ups: never let a native run_command go to the background (keep WaitMsBeforeAsync at 0 for foreground runs and native commands under two minutes, since longer foreground waits hit pi's idle cap and kill the turn; wrap long commands in timeout and run anything longer through the Pi Bridge bash tool, which keeps it inside your turn, and poll bridge_poll_result if it answers STILL RUNNING) and never use the native schedule tool or timers. A task left running when you reply outlives your turn: its wake-up cannot call Pi Bridge tools, and a delegated subagent session is already gone when it fires.]";
+
+/** Appended after the tool-priority note when the bridge runs in codemode
+ *  configuration: the engine's catalog has no direct file tools, so the
+ *  note's "use the Pi Bridge tools" instruction must be redirected into
+ *  scripts. */
+export const CODEMODE_NOTE =
+	"This conversation runs in codemode configuration: the direct Pi file tools (read, ls, grep, find, edit, write, bash) are not in your tool list; call them from inside codemode scripts as tools.read, tools.ls, tools.grep, tools.find, tools.edit, tools.write, tools.bash. Long or multi-step file work belongs in one script, not many tool calls.";
 
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
@@ -263,12 +281,13 @@ export function buildFullPrompt(
 	systemPrompt: string | undefined,
 	digest: string,
 	prompt: string,
-	sendEmptySystemPrompt = false,
+	options?: { codemodeOnly?: boolean; sendEmptySystemPrompt?: boolean },
 ): string {
 	const parts: string[] = [];
-	if (systemPrompt || sendEmptySystemPrompt) {
+	if (systemPrompt || options?.sendEmptySystemPrompt) {
 		const body = systemPrompt ? `${systemPrompt}\n\n` : "";
-		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${body}${TOOL_PRIORITY_NOTE}\n\n${SYSTEM_PROMPT_END}`);
+		const note = options?.codemodeOnly ? `${TOOL_PRIORITY_NOTE}\n\n${CODEMODE_NOTE}` : TOOL_PRIORITY_NOTE;
+		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${body}${note}\n\n${SYSTEM_PROMPT_END}`);
 	}
 	if (digest) {
 		parts.push(`${DIGEST_PREAMBLE}\n\n${digest}`);
@@ -302,6 +321,39 @@ function stripCompactionWrapping(t: string): string {
 	const close = t.lastIndexOf("</summary>");
 	if (open >= 0 && close > open) return t.slice(open + "<summary>".length, close).trim();
 	return t.trim();
+}
+
+/** Per-part body caps so one oversized entry cannot starve the delta budget
+ *  (issue #25: a single >8KB tool result used to erase every earlier turn).
+ *  Head+tail keeps the result's opening and its final summary/error lines. */
+const TOOL_RESULT_HEAD = 800;
+const TOOL_RESULT_TAIL = 300;
+
+function capToolResultBody(t: string): string {
+	if (!t) return "(no text output)";
+	const overflow = t.length - TOOL_RESULT_HEAD - TOOL_RESULT_TAIL;
+	if (overflow <= 0) return t;
+	return `${t.slice(0, TOOL_RESULT_HEAD)}\n[${overflow} chars elided]\n${t.slice(-TOOL_RESULT_TAIL)}`;
+}
+
+const TOOL_CALL_ARGS_CAP = 200;
+
+function renderToolCalls(content: unknown): string {
+	if (!Array.isArray(content)) return "";
+	const lines: string[] = [];
+	for (const b of content) {
+		if (typeof b !== "object" || b === null || (b as { type?: string }).type !== "toolCall") continue;
+		const { name, arguments: args } = b as { name?: string; arguments?: unknown };
+		let argsText: string;
+		try {
+			argsText = JSON.stringify(args ?? {});
+		} catch {
+			argsText = "(unserializable args)";
+		}
+		if (argsText.length > TOOL_CALL_ARGS_CAP) argsText = `${argsText.slice(0, TOOL_CALL_ARGS_CAP)}…`;
+		lines.push(`[tool call: ${name ?? "?"}(${redactText(argsText)})]`);
+	}
+	return lines.join("\n");
 }
 
 export interface DigestOptions {
@@ -338,21 +390,28 @@ export interface DigestOptions {
 /** Soft cap on the digest body when no tighter budget applies. */
 const DIGEST_MAX_CHARS = 8000;
 
+/** ACP digest cap: the embeddedContext transport carried a 120k-char probe
+ *  block with exact needle recall at both block extremities
+ *  (scripts/probe-acp-context.mjs, 2026-11-24), so 24k is transport-safe
+ *  and shrinks the newest-first partial-render hole. stream-json keeps
+ *  DIGEST_MAX_CHARS: its digest rides inline under the prompt byte cap. */
+const ACP_DIGEST_MAX_CHARS = 24_000;
+
 /** stream-json single-prompt silent-drop cap (issue #2, probed 2026-09-30):
  *  the CLI drops any prompt past ~25KB with SUCCESS and an empty response,
  *  and the dropped turn leaves the conversation permanently unresponsive. */
-const STREAM_JSON_PROMPT_CAP = 25_000;
+export const STREAM_JSON_PROMPT_CAP = 25_000;
 /** Headroom under the cap for the staged-image note and prompt framing. */
-const STREAM_JSON_PROMPT_MARGIN = 4_096;
+export const STREAM_JSON_PROMPT_MARGIN = 4_096;
 
 /** Per-engine digest cap. ACP ships the digest as an embeddedContext
-	resource block: no prompt cap applies, so the default cap stands. On
-	stream-json the digest rides inline in the prompt, so it must fit under
+	resource block: no prompt cap applies, so the probe-raised cap stands.
+	On stream-json the digest rides inline in the prompt, so it must fit under
 	the silent-drop budget alongside the user's own prompt bytes. Returns
 	null when the budget is already exhausted (ship nothing rather than a
 	digest that would push the turn over the drop cap). */
 export function digestMaxCharsForEngine(engine: string, promptLength: number): number | null {
-	if (engine === "acp") return DIGEST_MAX_CHARS;
+	if (engine === "acp") return ACP_DIGEST_MAX_CHARS;
 	const budget = STREAM_JSON_PROMPT_CAP - promptLength - STREAM_JSON_PROMPT_MARGIN;
 	return budget > 0 ? Math.min(DIGEST_MAX_CHARS, budget) : null;
 }
@@ -411,16 +470,36 @@ export function compactionFingerprint(m: Message): string {
  *  Fidelity note: other-provider assistant turns contribute only their text
  *  blocks; tool-call and thinking blocks are dropped. The intent (which tool)
  *  is lost, but their results still surface separately as toolResult messages. */
-export function buildContextDigest(
+export interface DigestResult {
+	/** Digest body, "" when nothing rendered. */
+	text: string;
+	/** First index of the delta window (after clamp adjustments). */
+	windowStart: number;
+	/** Exclusive window end (run extraction boundary). */
+	windowEnd: number;
+	/** Oldest message index whose content is actually in the digest.
+	 *  == windowStart when the whole window rendered; == windowEnd when
+	 *  nothing fit; in between when the budget cut old turns (the pi-lens
+	 *  watermark invariant: the record may only claim delivery of what
+	 *  rendered). */
+	deliveredFrom: number;
+}
+
+export function buildContextDigestResult(
 	messages: Message[],
 	watermark: number,
 	opts: DigestOptions = {},
-): string {
+): DigestResult {
 	const own = opts.ownProvider ?? "antigravity";
 	const maxChars = opts.maxChars ?? DIGEST_MAX_CHARS;
-	if (messages.length === 0) return "";
+	if (messages.length === 0) {
+		return { text: "", windowStart: 0, windowEnd: 0, deliveredFrom: 0 };
+	}
 
 	const deltaParts: string[] = [];
+	// Message index each delta part was rendered from: the budget cut has to
+	// report which messages actually shipped, not just how many parts.
+	const partIdx: number[] = [];
 
 	// 1. Compaction summary (never in agy's DB, so always high-value), but
 	//    only when THIS summary has not shipped in a previous digest.
@@ -456,19 +535,22 @@ export function buildContextDigest(
 		const m = messages[i];
 		if (m.role === "assistant") {
 			if (opts.bound !== false && m.provider === own) continue; // our own turn: already in agy's DB
-			const t = blocksToText(m.content).trim();
+			const t = [blocksToText(m.content).trim(), renderToolCalls(m.content)].filter(Boolean).join("\n");
 			if (!t) continue;
 			deltaParts.push(`[assistant turn from ${m.provider}]\n${t}`);
+			partIdx.push(i);
 		} else if (isUserLikeRole(m.role)) {
 			const t = blocksToText(m.content);
 			if (t.includes(COMPACTION_MARKER) || isOmpCompactionSummary(t)) continue; // delivered as the summary part
 			if (!t.trim()) continue;
 			deltaParts.push(`[earlier user message]\n${t}`);
+			partIdx.push(i);
 		} else if (m.role === "toolResult") {
 			const t = blocksToText(m.content).trim();
 			deltaParts.push(
-				`[tool result: ${m.toolName}${m.isError ? " (error)" : ""}]\n${t || "(no text output)"}`,
+				`[tool result: ${m.toolName}${m.isError ? " (error)" : ""}]\n${capToolResultBody(t)}`,
 			);
+			partIdx.push(i);
 		}
 	}
 
@@ -485,15 +567,18 @@ export function buildContextDigest(
 		summaryPart = `${summaryPart.slice(0, room)}\n${MARKER}`;
 	}
 	let delta = deltaParts.join(SEP);
+	let oldestKept = partIdx.length > 0 ? partIdx[0] : end;
 	if (maxChars > 0) {
 		const budget = Math.max(0, maxChars - (summaryPart ? summaryPart.length + SEP.length : 0));
 		if (delta.length > budget) {
 			const kept: string[] = [];
 			let used = 0;
+			oldestKept = end;
 			for (let i = deltaParts.length - 1; i >= 0; i--) {
 				const cost = deltaParts[i].length + (kept.length > 0 ? SEP.length : 0);
 				if (used + cost > budget) break;
 				kept.unshift(deltaParts[i]);
+				oldestKept = partIdx[i];
 				used += cost;
 			}
 			if (kept.length > 0) {
@@ -505,9 +590,18 @@ export function buildContextDigest(
 		}
 	}
 
-	return [summaryPart, delta]
+	const text = [summaryPart, delta]
 		.filter((s): s is string => typeof s === "string" && s.length > 0)
 		.join(SEP);
+	return { text, windowStart: start, windowEnd: end, deliveredFrom: text ? oldestKept : end };
+}
+
+export function buildContextDigest(
+	messages: Message[],
+	watermark: number,
+	opts: DigestOptions = {},
+): string {
+	return buildContextDigestResult(messages, watermark, opts).text;
 }
 
 /** Build a fresh AssistantMessage shell for this turn. Mutated as blocks
@@ -626,6 +720,18 @@ export interface StreamSimpleDeps {
 	 *  OMP system-prompt reduction keeps the skills list only when it does.
 	 *  Absent = not offered. Ignored under pi. */
 	skillsToolOffered?: () => boolean;
+	/** Live pi-side tool visibility (extension wiring). Lets prompt text
+	 *  adapt to the catalog the engine actually got; omitted in tests,
+	 *  which reads as "the configured mode is authoritative". */
+	hasActiveTool?: (name: string) => boolean;
+	/** Per-provider handoff runtime: the mode each session key's last
+	 *  dispatched turn used (continuations must settle under the same
+	 *  contract as the parked turn) and consecutive warm-session rebuild
+	 *  counts for the churn gate. Created by createStreamSimple. */
+	handoffRuntime?: {
+		mode: Map<string, "digest" | "sync">;
+		rebuildStreak: Map<string, number>;
+	};
 	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
 	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
@@ -1299,6 +1405,57 @@ export interface LateToolResult {
 	images?: Array<{ data: string; mimeType: string }>;
 }
 
+export interface SteeredUserMessage {
+	/** Transcript index of the message; the watermark hold on a failed
+	 *  delivery claims up to this index. */
+	index: number;
+	text: string;
+	images: Array<{ data: string; mimeType: string }>;
+}
+
+/** User messages pi delivered into the context after the steering floor: pi's
+ *  steering poll runs right after tool results, so a message typed while agy
+ *  was parked joins the transcript but the continuation pass re-attaches to
+ *  the parked turn and sends no new user event (Baluard 2026-11-25: the
+ *  message sat in the transcript, agy never saw it, and pi's drained queue
+ *  never re-triggered - the turn just ended). The floor is the session's
+ *  steering cursor (dispatch length + delivered-through); without one (pi
+ *  restart mid-turn) it falls back to the first still-pending toolResult's
+ *  index, whose everything-before belongs to the parked turn's dispatched
+ *  prompt. Backlog shapes (compaction/branch/bash runs) never count as
+ *  steering. Pure; exported for tests. */
+export function collectSteeredUserMessages(messages: Message[], pendingIds: readonly string[], floor?: number): SteeredUserMessage[] {
+	if (pendingIds.length === 0) return [];
+	let start: number;
+	if (floor !== undefined) {
+		start = floor;
+	} else {
+		const pending = new Set(pendingIds);
+		let anchor = -1;
+		for (let i = 0; i < messages.length; i++) {
+			const m = messages[i];
+			if (m.role !== "toolResult") continue;
+			const id = (m as { toolCallId?: string }).toolCallId;
+			if (id && pending.has(id)) {
+				anchor = i;
+				break;
+			}
+		}
+		if (anchor < 0) return [];
+		start = anchor + 1;
+	}
+	const out: SteeredUserMessage[] = [];
+	for (let i = start; i < messages.length; i++) {
+		const m = messages[i];
+		if (m.role !== "user") continue;
+		if (isBacklogUserShape(blocksToText(m.content))) continue;
+		const parts = lastMessageParts(m);
+		if (!parts.text && parts.images.length === 0) continue;
+		out.push({ index: i, text: parts.text ?? "", images: parts.images });
+	}
+	return out;
+}
+
 /** Frame late tool results so agy treats them as the results its bridge calls
  *  never received: a park whose round-trip died while the pi tool ran, or an
  *  escalated result the model never polled. The reason carries the framing. */
@@ -1336,6 +1493,13 @@ export interface DriverDeps {
 	skillsToolOffered?: () => boolean;
 	/** Active engine (config), for engine-scoped session keys. */
 	engine: "stream-json" | "acp";
+	/** Live pi-side tool visibility (see StreamSimpleDeps). */
+	hasActiveTool?: (name: string) => boolean;
+	/** Per-provider handoff runtime (see StreamSimpleDeps). */
+	handoffRuntime?: {
+		mode: Map<string, "digest" | "sync">;
+		rebuildStreak: Map<string, number>;
+	};
 	/** Daily file log sink for pre-dispatch errors (see StreamSimpleDeps). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
 }
@@ -1594,12 +1758,33 @@ async function runTurnDriver(
 	// Summary id carried forward from the record; the gate below overwrites it
 	// only when a digest actually ships, so skipped turns never lose it.
 	let settleSummaryId = existing?.digestSummaryId;
+	// Settle writes (both store.set paths) use these: they default to normal
+	// advance semantics and the digest build overrides them when a wanted
+	// digest failed to ship (see the delivery invariant at the build site).
+	let nextCount = messageCount;
+	let nextBoundary: string | undefined = settleBoundary;
 
 	// Continuation: resolve parked round-trips from pi's toolResult messages,
 	// then re-attach to the still-running agy turn. No new user event is sent:
 	// agy receives the result via the bridge's MCP HTTP response.
 	const results = collectToolResults(context.messages, deps.roundTrips.pendingIds);
 	const isContinuation = results.length > 0;
+	// Scanned before the resolve loop: the pending set must still contain the
+	// parks being resolved. The steering floor is the session's dispatch
+	// cursor when one exists (dispatch length + delivered-through), else the
+	// first-pending-toolResult anchor fallback.
+	const steerCursor = steerCursors.get(key);
+	const steered = ephemeral
+		? []
+		: collectSteeredUserMessages(
+				context.messages,
+				deps.roundTrips.pendingIds,
+				steerCursor ? Math.max(steerCursor.dispatchedAt, steerCursor.deliveredThrough) : undefined,
+		  );
+	// Set when a steer leads the dead-turn fallback into a fresh dispatch: the
+	// steer shipped as that dispatch's own prompt, so the post-outcome sweep
+	// must stay off (and its stranded-claim re-sweep with it).
+	let steerLedFresh = false;
 	// Escalated calls answer through bridge_poll_result, not through an agy
 	// turn waiting on the park, so note them before resolving.
 	const escalatedNames = results
@@ -1695,6 +1880,30 @@ async function runTurnDriver(
 	const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
 
 	let handle: TurnHandle | undefined;
+	// True when THIS pass dispatched a fresh driver.run on the digest flow
+	// (the sync dispatch and live re-attaches leave it false): it keys the
+	// settle contract below so a digest redelivery over a sync-latched
+	// session settles digest-shaped.
+	let digestDispatched = false;
+	// The codemode note ships only when the engine's catalog actually has
+	// the tool: pi registers codemode inactive by default, and the note
+	// would otherwise point at scripts the engine cannot call. No probe
+	// dep (tests) reads as "the configured mode is authoritative".
+	let codemodeNote = false;
+	if (config.bridgeTools === "codemode") {
+		// A stale pi handle throws on getActiveTools after /reload or a
+		// session replacement; fall back to the configured value rather
+		// than killing the turn from the prompt-builder path.
+		try {
+			codemodeNote = deps.hasActiveTool?.("codemode") ?? true;
+		} catch {
+			codemodeNote = true;
+		}
+	}
+	// The sync orchestrator for THIS pass when the sync gate dispatched; the
+	// settle (and the park persist) sit outside the fresh-pass block, so the
+	// binding is function-level (the round-1 settle scope trap).
+	let syncTurn: AcpHistorySync | undefined;
 	// Name of the carrier agent staged for THIS turn's fresh conversation, if
 	// any. Recorded into stagedAgentByConversation once the outcome binds the
 	// conversation id, so later gate-closed turns pass the same agent.
@@ -1706,7 +1915,13 @@ async function runTurnDriver(
 		// Dead turn: claim NOW (single-use). A live turn claims after outcome
 		// instead — claiming here would eat the post-outcome recovery.
 		if (!ephemeral) late.push(...collectStranded());
-		if (isContinuation && late.length === 0) {
+		// A steer with a bound conversation leads the fresh dispatch instead of
+		// stopping quietly: the trailing user run becomes the prompt, so the
+		// message is answered rather than dropped or left to the digest window.
+		// The sweep below must not re-deliver what that dispatch just shipped.
+		const steerCanLead = steered.length > 0 && Boolean(existing?.conversationId);
+		if (isContinuation && late.length === 0 && steerCanLead) steerLedFresh = true;
+		if (isContinuation && late.length === 0 && !steerCanLead) {
 			if (escalatedNames.length === 0) {
 				deps.log?.("turn-error", { reason: "tool-result-no-active-turn" }, "warn");
 				finalize(stream, blocks, "error", "tool result arrived but no antigravity turn is running");
@@ -1826,22 +2041,133 @@ async function runTurnDriver(
 				}
 			}
 		}
+		// --- sync handoff mode (opt-in via AGY_HANDOFF=sync, ACP-only) ---
+		// The checkpoint/plan owns continuity instead of the digest: history
+		// ships as a framed resource block, the record persists the zeroed
+		// contract, and the settle bypasses the digest store writes. Legacy
+		// paths (late/strand redelivery, retry-dropped resume, post-compaction
+		// resume) and the churn latch stay on the digest flow.
+		// A fresh dispatch of the trailing user run opens a new steering window:
+		// everything up to here is the prompt the turn carries, so mid-park
+		// steers must land strictly after this index. Synthetic prompts (late
+		// strands, resume, compaction seeding) do NOT open one - their context
+		// may still hold undelivered steers.
+		if (!resume && !compactionResume && late.length === 0) {
+			steerCursors.set(key, { dispatchedAt: messageCount, deliveredThrough: 0 });
+		}
+		const handoffRuntime = deps.handoffRuntime;
+		const syncTurnRequested = config.handoff === "sync" && engine === "acp";
+		if (
+			syncTurnRequested &&
+			!ephemeral &&
+			!isContinuation &&
+			late.length === 0 &&
+			!resume &&
+			!compactionResume &&
+			!redeliveryConversation &&
+			!existing?.sync?.digestFallback
+		) {
+			const turn = new AcpHistorySync(context.messages, existing, { isBacklogShape: isBacklogUserShape });
+			syncTurn = turn;
+			deps.log?.(
+				"sync-plan",
+				{ key, kind: turn.plan.kind, reason: turn.plan.reason, fresh: turn.freshConversation, history: turn.plan.history.length },
+				"info",
+			);
+			if (existing && turn.plan.kind === "rebuild" && turn.plan.reason === "changed-prefix") {
+				// Count ONLY transcript churn (the checkpoint exists but the
+				// prefix moved: per-turn context-hook rewrites). Failure-induced
+				// rebuilds (invalidReason, unsettled submissions, first-enable
+				// missing checkpoints) are transient and must never pin the
+				// session to digest.
+				const streak = (handoffRuntime?.rebuildStreak.get(key) ?? 0) + 1;
+				handoffRuntime?.rebuildStreak.set(key, streak);
+				if (streak >= 3 && !existing.sync?.digestFallback) {
+					turn.markDigestFallback();
+					deps.log?.("sync-churn-fallback", { key, streak }, "warn");
+				}
+			} else if (turn.plan.kind !== "rebuild") {
+				handoffRuntime?.rebuildStreak.delete(key);
+			}
+			const gateOpen = Boolean(config.systemPrompt) && turn.freshConversation;
+			const sys = gateOpen ? contextSystemPrompt(context, { skillsTool: deps.skillsToolOffered?.() === true }) : undefined;
+			const syncImages = [...images, ...late.flatMap((l) => l.images ?? [])];
+			try {
+				// inputFor hard-fails past the outbound frame budget and the
+				// coordinator calls throw on invariants: both must fail the turn
+				// visibly, not surface as an unhandled rejection.
+				const input = turn.inputFor({
+					prompt: buildFullPrompt(sys, "", userPrompt ?? "", { codemodeOnly: codemodeNote, sendEmptySystemPrompt: sys === "" }) + stageImageNote(syncImages),
+					images: syncImages,
+				});
+				turn.bound(key);
+				turn.dispatching();
+				handle = await deps.driver.run({
+					cwd,
+					model: agyModel,
+					effort,
+					mode: config.mode,
+					skipPermissions: config.skipPermissions,
+					timeoutMin: config.turnTimeoutMin,
+					inactivityMin: config.inactivityTimeoutMin,
+					conversationId: turn.boundConversationId,
+					prompt: input.prompt,
+					images: input.images,
+					agent: config.agent,
+					contextBlock: input.contextBlock,
+					onSessionBound: ({ sessionId }) => {
+						turn.adoptBinding(sessionId);
+						if (!rotationGuardArmed()) {
+							const rec = turn.record();
+							if (rec.conversationId) store.set(key, { ...rec, conversationId: rec.conversationId });
+						}
+					},
+					onSessionLoadFailed: () => {
+						// session/load died: re-plan as a rebuild and ship the whole
+						// history to a fresh conversation; the gate re-opens there.
+						const freshSys = config.systemPrompt ? contextSystemPrompt(context, { skillsTool: deps.skillsToolOffered?.() === true }) : undefined;
+						const fresh = turn.loadFailed({
+							prompt:
+								buildFullPrompt(freshSys, "", userPrompt ?? "", { codemodeOnly: codemodeNote, sendEmptySystemPrompt: freshSys === "" }) +
+								stageImageNote(syncImages),
+							images: syncImages,
+						});
+						// Re-arm the settle: loadFailed invalidated and re-planned
+						// (phase syncing), and the swap prompt below is the turn's
+						// real dispatch — without this the settle finds a
+						// non-settleable coordinator and forces a second rebuild.
+						turn.bound(key);
+						turn.dispatching();
+						return { prompt: fresh.prompt, contextBlock: fresh.contextBlock, images: fresh.images };
+					},
+					signal: options?.signal,
+				});
+				handoffRuntime?.mode.set(key, "sync");
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				deps.log?.("turn-error", { reason: "dispatch-failed", error: msg }, "error");
+				finalize(stream, blocks, "error", err instanceof OutboundFrameBudgetError ? msg : `agy failed to start: ${msg}`);
+				return;
+			}
+		}
 		const promptBytes = Buffer.byteLength(deliveredPrompt, "utf8");
 		// A truncated run ships alone: the digest budget is spent, and a
 		// marker-only digest beside a sliced prompt is noise that also breaks
 		// agy's server-side prompt cache.
 		const wantDigest = (config.digest || compactionHandoff || compactionResume) && !runTruncated;
 		const maxChars = digestMaxCharsForEngine(engine, promptBytes);
-		const digest =
+		const digestRes =
+			!syncTurn &&
 			wantDigest && maxChars !== null && late.length === 0 && !resume
-				? buildContextDigest(context.messages, watermark, {
+				? buildContextDigestResult(context.messages, watermark, {
 						bound: Boolean(existing?.conversationId),
 						seenSummaryId: existing?.digestSummaryId,
 						maxChars,
 						end: run.runStart,
 						includeLast: compactionResume,
 					})
-				: "";
+				: undefined;
+		const digest = digestRes?.text ?? "";
 		// Byte-level fail closed (issue #2): the char budget over-reserves for
 		// ASCII but a multibyte digest can still exceed the remaining byte
 		// room. ACP carries no prompt cap, so the check is stream-json only.
@@ -1851,6 +2177,36 @@ async function runTurnDriver(
 			promptBytes + STREAM_JSON_PROMPT_MARGIN + Buffer.byteLength(digest, "utf8") > STREAM_JSON_PROMPT_CAP
 				? ""
 				: digest;
+		// Watermark delivery invariant (issue #25 follow-up): the record may
+		// only claim what reached agy. When a built digest failed the byte
+		// check, nothing shipped, so the settle write HOLDS the pre-turn
+		// watermark - the whole window re-offers next turn, duplicating
+		// nothing because nothing arrived. (maxChars null is defensive: a
+		// spent budget co-occurs with runTruncated, which skips the digest
+		// deliberately.) Partial renders (budget cut the oldest turns) still
+		// advance: the hole can never re-fit under the newest-first budget,
+		// and re-offering it every turn would re-embed cap-sized duplicate
+		// blocks into agy's DB; the hole is logged instead.
+		const digestDropped = wantDigest && (maxChars === null || (digest !== "" && !digestFinal));
+		if (digestDropped) {
+			nextCount = existing?.lastMessageCount ?? watermark;
+			nextBoundary = existing?.digestBoundary;
+		}
+		if (!syncTurn)
+			deps.log?.(
+				"digest",
+				{
+					engine,
+					bound: Boolean(existing?.conversationId),
+					maxChars,
+					bytes: digestFinal ? Buffer.byteLength(digestFinal, "utf8") : 0,
+					windowStart: digestRes?.windowStart,
+					windowEnd: digestRes?.windowEnd,
+					deliveredFrom: digestRes?.deliveredFrom,
+					shipped: Boolean(digestFinal),
+				},
+				digestDropped ? "warn" : "info",
+			);
 		// The delivered summary id persists only when a digest actually shipped:
 		// late/resume/budget-skipped turns carry the previous id forward so the
 		// summary is not lost to a turn that never delivered it.
@@ -1886,7 +2242,13 @@ async function runTurnDriver(
 		if (deps.engine !== "acp") {
 			if (rawSysPrompt !== undefined && !config.agent) {
 				const stagedName = stageSyspromptAgent(
-					[SYSTEM_PROMPT_PREAMBLE, rawSysPrompt, TOOL_PRIORITY_NOTE].filter((part) => part.length > 0).join("\n\n"),
+					[
+						SYSTEM_PROMPT_PREAMBLE,
+						rawSysPrompt,
+						codemodeNote ? `${TOOL_PRIORITY_NOTE}\n\n${CODEMODE_NOTE}` : TOOL_PRIORITY_NOTE,
+					]
+						.filter((part) => part.length > 0)
+						.join("\n\n"),
 				);
 				if (stagedName) {
 					agent = stagedName;
@@ -1913,50 +2275,94 @@ async function runTurnDriver(
 		// prompt is text-only); user-message images ride them on ACP natively
 		// and staged files on stream-json.
 		const runImages = [...images, ...late.flatMap((l) => l.images ?? [])];
+		// Issue #25: an ACP session/load failure silently creates a fresh agy
+		// conversation mid-turn, and the bound-mode prompt (G10 gate closed by
+		// the binding, bound:true digest skipping own turns) would ship blind.
+		// This variant is built as-if-fresh; the driver swaps it in only when
+		// the load actually fails. stream-json cannot detect that drop, so it
+		// is ACP-only.
+		const requestConversation = redeliveryConversation ?? existing?.conversationId ?? null;
+		const acpFallback =
+			!syncTurn && deps.engine === "acp" && requestConversation && !resume && late.length === 0
+				? (() => {
+						const fbSys = config.systemPrompt ? contextSystemPrompt(context, { skillsTool: deps.skillsToolOffered?.() === true }) : undefined;
+						const freshDigest = wantDigest
+							? buildContextDigestResult(context.messages, 0, {
+									bound: false,
+									maxChars: ACP_DIGEST_MAX_CHARS,
+									end: run.runStart,
+									includeLast: compactionResume,
+								})
+							: null;
+						// Both features off: the variant would equal the plain prompt.
+						if (fbSys === undefined && !freshDigest?.text) return undefined;
+						return {
+							prompt: buildFullPrompt(fbSys, "", deliveredPrompt, { codemodeOnly: codemodeNote, sendEmptySystemPrompt: fbSys === "" }) + stageImageNote(runImages),
+							contextBlock: freshDigest?.text
+								? {
+										uri: `urn:pi-bridge:context-digest/fresh/${messageCount}`,
+										text: `${DIGEST_PREAMBLE}\n\n${freshDigest.text}`,
+									}
+								: undefined,
+						};
+					})()
+				: undefined;
 		const fullPrompt =
 			(late.length > 0
 				? buildLateResultPrompt(late, deliveredPrompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt, sysPrompt === "")) +
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt, { codemodeOnly: codemodeNote, sendEmptySystemPrompt: sysPrompt === "" })) +
 			stageImageNote(runImages);
-		try {
-			handle = await deps.driver.run({
-				cwd,
-				model: agyModel,
-				effort,
-				mode: config.mode,
-				skipPermissions: config.skipPermissions,
-				timeoutMin: config.turnTimeoutMin,
-				inactivityMin: config.inactivityTimeoutMin,
-				conversationId: redeliveryConversation ?? existing?.conversationId ?? null,
-				prompt: fullPrompt,
-				images: runImages.length > 0 ? runImages : undefined,
-				agent,
-				contextBlock: embeddedDigest
-					? {
-							uri: `urn:pi-bridge:context-digest/${messageCount}`,
-							text: `${DIGEST_PREAMBLE}\n\n${embeddedDigest}`,
-						}
-					: undefined,
-				signal: options?.signal,
-			});
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			// Release stranded claims: the delivery never started, so the next
-			// pass must find them undelivered (tombstone-borne items have no
-			// callId and stay consumed, as before).
-			for (const l of late) if (l.callId) deps.roundTrips.unclaim(l.callId);
-			// A signal aborted before (or while) the driver started is a
-			// deliberate abort: OMP aborts auxiliary calls routinely, and those
-			// must stay off the error log and out of the toasts.
-			if (options?.signal?.aborted) {
-				deps.log?.("turn-error", { reason: "aborted-before-start", error: msg }, "debug");
-				finalize(stream, blocks, "aborted", "Operation aborted");
+		if (!syncTurn) {
+			try {
+				handle = await deps.driver.run({
+					cwd,
+					model: agyModel,
+					effort,
+					mode: config.mode,
+					skipPermissions: config.skipPermissions,
+					timeoutMin: config.turnTimeoutMin,
+					inactivityMin: config.inactivityTimeoutMin,
+					conversationId: redeliveryConversation ?? existing?.conversationId ?? null,
+					prompt: fullPrompt,
+					images: runImages.length > 0 ? runImages : undefined,
+					agent,
+					fallback: acpFallback,
+					contextBlock: embeddedDigest
+						? {
+								uri: `urn:pi-bridge:context-digest/${messageCount}`,
+								text: `${DIGEST_PREAMBLE}\n\n${embeddedDigest}`,
+							}
+						: undefined,
+					signal: options?.signal,
+				});
+				if (!ephemeral) handoffRuntime?.mode.set(key, "digest");
+				digestDispatched = true;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				// Release stranded claims: the delivery never started, so the next
+				// pass must find them undelivered (tombstone-borne items have no
+				// callId and stay consumed, as before).
+				for (const l of late) if (l.callId) deps.roundTrips.unclaim(l.callId);
+				// A signal aborted before (or while) the driver started is a
+				// deliberate abort: OMP aborts auxiliary calls routinely, and those
+				// must stay off the error log and out of the toasts.
+				if (options?.signal?.aborted) {
+					deps.log?.("turn-error", { reason: "aborted-before-start", error: msg }, "debug");
+					finalize(stream, blocks, "aborted", "Operation aborted");
+					return;
+				}
+				deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
+				finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
 				return;
 			}
-			deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
-			finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
-			return;
 		}
+	}
+
+	if (!handle) {
+		// Unreachable in practice: every non-finalized path above dispatched a
+		// turn. Fail visibly instead of arguing with the type checker.
+		finalize(stream, blocks, "error", "agy turn was not dispatched");
+		return;
 	}
 
 	ensureStarted(stream, blocks);
@@ -1998,18 +2404,28 @@ async function runTurnDriver(
 		// recreated a conversation, so the snapshot id is the real one, and
 		// the staged agent must move with the binding or a stream-json resume
 		// re-runs without its carrier-agent profile.
-		if (!ephemeral && !existing && !rotationGuardArmed()) {
+		if (!ephemeral && !rotationGuardArmed() && (syncTurn || !existing)) {
 			const parkedConv = deps.driver.snapshot().conversationId;
 			if (parkedConv) {
-				store.set(key, {
-					conversationId: parkedConv,
-					lastStepIdx: -1,
-					lastMessageCount: messageCount,
-					digestBoundary: settleBoundary,
-					digestSummaryId: settleSummaryId,
-				});
-				deps.pendingCompactionHandoff?.delete(key);
-				if (stagedAgentName) stagedAgentByConversation.set(parkedConv, stagedAgentName);
+				if (syncTurn) {
+					// Sync persists the zeroed contract with the adopted binding;
+					// a rebuild that parked already carried the compaction summary
+					// as history, so the latch has no second consumer.
+					syncTurn.adoptBinding(parkedConv);
+					const rec = syncTurn.record();
+					if (rec.conversationId) store.set(key, { ...rec, conversationId: rec.conversationId });
+					if (syncTurn.freshConversation) deps.pendingCompactionHandoff?.delete(key);
+				} else {
+					store.set(key, {
+						conversationId: parkedConv,
+						lastStepIdx: -1,
+						lastMessageCount: nextCount,
+						digestBoundary: nextBoundary,
+						digestSummaryId: settleSummaryId,
+					});
+					deps.pendingCompactionHandoff?.delete(key);
+					if (stagedAgentName) stagedAgentByConversation.set(parkedConv, stagedAgentName);
+				}
 			}
 		}
 		return;
@@ -2081,41 +2497,153 @@ async function runTurnDriver(
 	// fix: sweep and deliver as a late run in the same conversation. Single
 	// shot: claims are single-use, so a re-delivered strand cannot reappear
 	// here; a late run that parks hands recovery to the next pi pass.
+	// A late-start failure must invalidate the sync contract below: its
+	// checkpoint would claim the steer agy never received.
+	let lateStartFailed = false;
 	if (!ephemeral && isContinuation && outcome.status === "OK" && !outcome.aborted) {
-		const more = collectStranded();
-		if (more.length > 0) {
+		const more = steerLedFresh ? [] : collectStranded();
+		// Steered messages join the same late run: pi delivered them into the
+		// context while the turn was parked and the reentry pass sent nothing
+		// to agy, so this sweep is the only delivery window left.
+		if (!steerLedFresh && (more.length > 0 || steered.length > 0)) {
 			const conv = redeliveryConversation ?? outcome.conversationId ?? existing?.conversationId ?? null;
-			deps.log?.("escalated-redelivery-turn", { tools: more.map((s) => s.name), conversation: conv }, "info");
-			const moreImages = more.flatMap((s) => s.images ?? []);
-			try {
-				const lateHandle = await deps.driver.run({
-					cwd,
-					model: agyModel,
-					effort,
-					mode: config.mode,
-					skipPermissions: config.skipPermissions,
-					timeoutMin: config.turnTimeoutMin,
-					inactivityMin: config.inactivityTimeoutMin,
-					conversationId: conv,
-					prompt: buildLateResultPrompt(more) + stageImageNote(moreImages),
-					images: moreImages.length > 0 ? moreImages : undefined,
-					agent: config.agent ?? (conv ? stagedAgentByConversation.get(conv) : undefined),
-					signal: options?.signal,
-				});
-				if ((await drainTurn(lateHandle)) === "parked") return;
-				outcome = await lateHandle.outcome;
-			} catch (err) {
-				// Release the claims so the next pass can retry the delivery.
-				for (const l of more) if (l.callId) deps.roundTrips.unclaim(l.callId);
+			const steerText = steered.map((s) => s.text).filter(Boolean).join("\n\n");
+			const latePrompt = more.length > 0 ? buildLateResultPrompt(more, steerText || undefined) : steerText;
+			// stream-json silently drops any prompt past the cap (issue #2) and
+			// the dropped turn leaves the conversation unresponsive: slice the
+			// steer visibly instead of killing it.
+			const lateBudget = STREAM_JSON_PROMPT_CAP - STREAM_JSON_PROMPT_MARGIN;
+			let deliveredLatePrompt = latePrompt;
+			if ((deps.engine ?? config.engine) !== "acp" && Buffer.byteLength(latePrompt, "utf8") > lateBudget) {
+				deliveredLatePrompt = `[truncated]\n${Buffer.from(latePrompt, "utf8").subarray(0, Math.max(0, lateBudget - 32)).toString("utf8")}`;
 				deps.log?.(
-					"turn-error",
-					{ reason: "redelivery-start-failed", error: err instanceof Error ? err.message : String(err) },
-					"error",
+					"turn-warning",
+					{ reason: "steer-prompt-truncated", bytes: Buffer.byteLength(latePrompt, "utf8"), budget: lateBudget },
+					"warn",
 				);
+			}
+			const moreImages = [...more.flatMap((s) => s.images ?? []), ...steered.flatMap((s) => s.images)];
+			deps.log?.(
+				"steered-redelivery-turn",
+				{ tools: more.map((s) => s.name), steered: steered.length, conversation: conv },
+				"info",
+			);
+			if (!conv) {
+				// Unbindable: a brand-new conversation would answer the steer with
+				// zero context. Release the claims and hold the watermark - the
+				// digest re-offers the steer once a conversation is bound.
+				for (const l of more) if (l.callId) deps.roundTrips.unclaim(l.callId);
+				lateStartFailed = true;
+				if (steered.length > 0) {
+					nextCount = steered[0].index;
+					nextBoundary = boundaryFingerprint(context.messages[steered[0].index - 1]);
+				}
+				deps.log?.("turn-warning", { reason: "steer-redelivery-unbound", steered: steered.length }, "warn");
+			} else {
+				try {
+					const lateHandle = await deps.driver.run({
+						cwd,
+						model: agyModel,
+						effort,
+						mode: config.mode,
+						skipPermissions: config.skipPermissions,
+						timeoutMin: config.turnTimeoutMin,
+						inactivityMin: config.inactivityTimeoutMin,
+						conversationId: conv,
+						prompt: deliveredLatePrompt + stageImageNote(moreImages),
+						images: moreImages.length > 0 ? moreImages : undefined,
+						agent: config.agent ?? (conv ? stagedAgentByConversation.get(conv) : undefined),
+						signal: options?.signal,
+					});
+					// Accepted by agy from here on: a parked late run hands
+					// recovery to the next pass, which must not re-collect it.
+					const cursor = steerCursors.get(key);
+					if (cursor && steered.length > 0) cursor.deliveredThrough = steered[steered.length - 1].index + 1;
+					if ((await drainTurn(lateHandle)) === "parked") return;
+					outcome = await lateHandle.outcome;
+				} catch (err) {
+					// Release the claims so the next pass can retry the delivery.
+					for (const l of more) if (l.callId) deps.roundTrips.unclaim(l.callId);
+					// A steer has no registry to re-arm, only the digest window: hold
+					// the watermark AND the boundary fingerprint at the first
+					// undelivered message, or the next turn reads the mismatched
+					// boundary as a mutated transcript and resets to full history.
+					lateStartFailed = true;
+					if (steered.length > 0) {
+						nextCount = steered[0].index;
+						nextBoundary = boundaryFingerprint(context.messages[steered[0].index - 1]);
+					}
+					deps.log?.(
+						"turn-error",
+						{ reason: "redelivery-start-failed", error: err instanceof Error ? err.message : String(err) },
+						"error",
+					);
+				}
 			}
 		}
 	}
-	if (!ephemeral && outcome.conversationId) {
+	// Sync settle: the orchestrator owns the record write (zeroed contract),
+	// so the digest settle below is bypassed entirely. A continuation of a
+	// parked sync turn reconstructs the coordinator from the record (the
+	// live re-attach fires no hooks) and marks it dispatched so the two-step
+	// settle can terminal. A digest redelivery over a sync-latched session
+	// (dead handle, deadIds) settles digest-shaped instead.
+	const syncContract =
+		syncTurn !== undefined ||
+		(isContinuation && !digestDispatched && !ephemeral && deps.handoffRuntime?.mode.get(key) === "sync");
+	if (syncContract && !ephemeral) {
+		try {
+			const settleSync =
+				syncTurn ??
+				(() => {
+					const recon = new AcpHistorySync(context.messages, existing, {
+						continuation: isContinuation,
+						isBacklogShape: isBacklogUserShape,
+					});
+					recon.bound(key);
+					recon.dispatching();
+					return recon;
+				})();
+			const result = settleSync.finish(
+				{
+					// A late-start failure leaves the steer undelivered: a terminal
+					// checkpoint would claim it. Invalidate so the next turn re-plans
+					// and the rebuild re-ships the steer as the newest user entry.
+					ok: outcome.status === "OK" && !lateStartFailed,
+					conversationId: outcome.conversationId ?? null,
+					aborted: outcome.aborted,
+					promptAttempted: outcome.promptAttempted,
+					promptTerminal: outcome.promptTerminal,
+				},
+				blocks.partial,
+				context.messages,
+				existing?.conversationId,
+			);
+			deps.log?.(
+				"sync-settle",
+				{
+					key,
+					settled: result.settled,
+					...("reason" in result ? { reason: result.reason } : {}),
+					conversation: outcome.conversationId,
+				},
+				"info",
+			);
+			const record = settleSync.record();
+			if (record.conversationId && !rotationGuardArmed()) {
+				store.set(key, { ...record, conversationId: record.conversationId });
+				// A rebuild shipped the compaction summary as history; the one-shot
+				// latch has no second consumer.
+				if (settleSync.freshConversation) deps.pendingCompactionHandoff?.delete(key);
+			}
+		} catch (err) {
+			// A settle invariant failure must not surface as an unhandled
+			// rejection (the caller is void): dropping the record forces a
+			// named rebuild next turn, the safe direction.
+			deps.log?.("sync-settle-failed", { key, error: err instanceof Error ? err.message : String(err) }, "error");
+			store.delete(key);
+		}
+	} else if (!ephemeral && outcome.conversationId) {
 		// A different id than the stored one means the driver recreated the
 		// conversation under us (ACP session-load fallback, stream-json CLI
 		// dropping a stale --conversation). The recreated conversation has seen
@@ -2134,9 +2662,13 @@ async function runTurnDriver(
 				store.set(key, {
 					conversationId: outcome.conversationId,
 					lastStepIdx: -1,
-					lastMessageCount: messageCount,
-					digestBoundary: settleBoundary,
+					lastMessageCount: nextCount,
+					digestBoundary: nextBoundary,
 					digestSummaryId: settleSummaryId,
+					// The churn latch must survive digest turns (store.set
+					// replaces the record), or the gate re-opens next turn and
+					// the session alternates rebuild/digest forever.
+					...(existing?.sync?.digestFallback ? { sync: existing.sync } : {}),
 				});
 				deps.pendingCompactionHandoff?.delete(key);
 				if (stagedAgentName) stagedAgentByConversation.set(outcome.conversationId, stagedAgentName);
@@ -2182,6 +2714,13 @@ export function createStreamSimple(
 	deps: StreamSimpleDeps,
 ): (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) => AssistantMessageEventStream {
 	const { entries, store, roundTrips } = deps;
+	// Per-provider handoff runtime: the park-time mode latch (continuations
+	// must settle under the same contract as the parked turn) and the churn
+	// gate's consecutive-rebuild counter, both keyed by session key.
+	const handoffRuntime = {
+		mode: new Map<string, "digest" | "sync">(),
+		rebuildStreak: new Map<string, number>(),
+	};
 
 	return function streamSimple(model, context, options) {
 		const stream = createAssistantMessageEventStream();
@@ -2260,6 +2799,8 @@ export function createStreamSimple(
 				onNativeBackground: deps.onNativeBackground,
 				roster: deps.roster,
 				pendingCompactionHandoff: deps.pendingCompactionHandoff,
+				handoffRuntime,
+				hasActiveTool: deps.hasActiveTool,
 				// Record the engine of the driver that will ACTUALLY run: if the
 				// ACP driver is absent, the config switch falls back to stream,
 				// and keying the session as @acp would store a stream

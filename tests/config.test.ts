@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { configWarningsMessage, loadConfig, saveConfig } from "../src/config.js";
+import { configWarningsMessage, loadConfig, migrateStaleDigestDefault, saveConfig } from "../src/config.js";
 
 function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-")), "config.json");
@@ -25,6 +25,8 @@ function withoutAgyEnvs(run: () => void): void {
 		"AGY_ACP_SESSION_RETRY",
 		"AGY_TURN_TIMEOUT_MIN",
 		"AGY_INACTIVITY_TIMEOUT_MIN",
+		"AGY_DEFAULT_THINKING",
+		"AGY_HANDOFF",
 	] as const;
 	const prevs = keys.map((k) => [k, process.env[k]] as const);
 	for (const k of keys) delete process.env[k];
@@ -65,11 +67,28 @@ test("config: defaults select the full bridge surface", () => {
 test("config: bridgeTools round-trips through load/save", () => {
 	const p = tmpConfig();
 	try {
-		for (const surface of ["all", "mcp", "none"] as const) {
+		for (const surface of ["all", "mcp", "none", "codemode"] as const) {
 			saveConfig({ bridgeTools: surface }, p);
 			assert.equal(loadConfig(p).bridgeTools, surface);
 		}
 	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: AGY_BRIDGE_TOOLS accepts codemode", () => {
+	const p = tmpConfig();
+	try {
+		process.env.AGY_BRIDGE_TOOLS = "codemode";
+		assert.equal(loadConfig(p).bridgeTools, "codemode");
+		process.env.AGY_BRIDGE_TOOLS = "CODEMODE";
+		assert.equal(loadConfig(p).bridgeTools, "codemode");
+		process.env.AGY_BRIDGE_TOOLS = "garbage";
+		const c = loadConfig(p);
+		assert.equal(c.bridgeTools, "all");
+		assert.ok((c.parseWarnings ?? []).some((w) => w.includes("bridgeTools")), "junk mode warns");
+	} finally {
+		delete process.env.AGY_BRIDGE_TOOLS;
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
 });
@@ -541,5 +560,127 @@ test("config: a fresh install under a symlinked parent dir stays linked", () => 
 		assert.equal(fs.lstatSync(path.join(realDir, "config.json")).isFile(), true, "the file landed inside the real dir");
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("config: stale digest:false migrates once to the ON default (issue #25)", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ digest: false }));
+		let result: { migrated: boolean };
+		withoutAgyEnvs(() => {
+			result = migrateStaleDigestDefault(p);
+		});
+		assert.equal(result!.migrated, true, "the stale default must migrate");
+		const file = JSON.parse(fs.readFileSync(p, "utf8")) as { digest?: boolean; digestMigrated?: boolean };
+		assert.equal(file.digest, true, "digest flips to the shipped default");
+		assert.equal(file.digestMigrated, true, "the marker persists so the flip happens once");
+		assert.equal(loadConfig(p).digest, true);
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: the migration marker keeps a deliberate digest off (issue #25)", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ digest: false, digestMigrated: true }));
+		let result: { migrated: boolean };
+		withoutAgyEnvs(() => {
+			result = migrateStaleDigestDefault(p);
+		});
+		assert.equal(result!.migrated, false);
+		const file = JSON.parse(fs.readFileSync(p, "utf8")) as { digest?: boolean };
+		assert.equal(file.digest, false, "an explicit post-migration off must survive");
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: AGY_DIGEST env suppresses the migration entirely (issue #25)", () => {
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ digest: false }));
+		const prev = process.env.AGY_DIGEST;
+		process.env.AGY_DIGEST = "1";
+		try {
+			assert.equal(migrateStaleDigestDefault(p).migrated, false);
+		} finally {
+			if (prev === undefined) delete process.env.AGY_DIGEST;
+			else process.env.AGY_DIGEST = prev;
+		}
+		const file = JSON.parse(fs.readFileSync(p, "utf8")) as { digest?: boolean };
+		assert.equal(file.digest, false, "env owns the knob; the file stays untouched");
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: digest absent or true never triggers the migration (issue #25)", () => {
+	const p = tmpConfig();
+	const p2 = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({}));
+		fs.writeFileSync(p2, JSON.stringify({ digest: true }));
+		withoutAgyEnvs(() => {
+			assert.equal(migrateStaleDigestDefault(p).migrated, false);
+			assert.equal(migrateStaleDigestDefault(p2).migrated, false);
+		});
+		assert.equal(fs.readFileSync(p, "utf8").includes("digestMigrated"), false, "no marker written for clean files");
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+		fs.rmSync(path.dirname(p2), { recursive: true, force: true });
+	}
+});
+
+test("config: defaultThinking accepts the native xhigh tier from env and file", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ defaultThinking: "xhigh" }));
+			const c = loadConfig(p);
+			assert.equal(c.defaultThinking, "xhigh");
+		});
+		withoutAgyEnvs(() => {
+			process.env.AGY_DEFAULT_THINKING = "xhigh";
+			const c = loadConfig(p);
+			assert.equal(c.defaultThinking, "xhigh");
+			delete process.env.AGY_DEFAULT_THINKING;
+		});
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ defaultThinking: "ultra" }));
+			const c = loadConfig(p);
+			assert.equal(c.defaultThinking, "medium");
+		});
+	} finally {
+		fs.rmSync(p, { force: true });
+	}
+});
+
+test("config: handoff mode defaults to digest, env and file opt into sync, junk falls back", () => {
+	const p = tmpConfig();
+	try {
+		withoutAgyEnvs(() => {
+			assert.equal(loadConfig(p).handoff, "digest");
+		});
+		withoutAgyEnvs(() => {
+			process.env.AGY_HANDOFF = "sync";
+			assert.equal(loadConfig(p).handoff, "sync");
+			delete process.env.AGY_HANDOFF;
+		});
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ handoff: "sync" }));
+			assert.equal(loadConfig(p).handoff, "sync");
+		});
+		let warned: string[] = [];
+		withoutAgyEnvs(() => {
+			fs.writeFileSync(p, JSON.stringify({ handoff: "stream" }));
+			const c = loadConfig(p);
+			assert.equal(c.handoff, "digest");
+			warned = c.parseWarnings ?? [];
+			assert.ok(warned.some((line) => line.includes("handoff")), "junk handoff must warn");
+		});
+	} finally {
+		fs.rmSync(p, { force: true });
 	}
 });

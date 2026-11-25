@@ -39,6 +39,33 @@ export interface DriverTurnRequest extends DriverProfile {
 	 *  resource block instead of inline prompt text (G1 on ACP). Stream-json
 	 *  embeds the digest in the prompt string and ignores this. */
 	contextBlock?: { uri: string; text: string };
+	/** Fresh-session variant for the ACP load-failure path (issue #25): when
+	 *  session/load fails and the driver falls back to a new session, it
+	 *  swaps prompt/contextBlock for this, so the fresh conversation still
+	 *  receives the system prompt and the full bound:false digest instead of
+	 *  answering blind. The provider prebuilds it for bound turns; the
+	 *  stream-json driver ignores it (the CLI drops stale ids silently and
+	 *  the swap point is undetectable). */
+	fallback?: { prompt: string; contextBlock?: { uri: string; text: string } };
+	/** History-sync lifecycle hooks (ACP only; optional). onSessionBound
+	 *  fires after the session is established (new, loaded, reused, or the
+	 *  load-failure fresh creation) and before config apply, so the provider
+	 *  can persist the binding first. onBeforePrompt fires just before the
+	 *  prompt RPC (write-ahead dispatch signal). Both fail the turn when they
+	 *  throw: a silent hook failure would checkpoint state the transport
+	 *  never confirmed. */
+	onSessionBound?: (info: { sessionId: string; reused: boolean; fresh: boolean }) => void | Promise<void>;
+	onBeforePrompt?: (info: { sessionId: string }) => void | Promise<void>;
+	/** Fired when session/load fails, BEFORE the fresh-session creation, so
+	 *  the provider can invalidate and re-prepare without an orphaned
+	 *  session. Returning a rebuild input swaps it in as the fresh
+	 *  conversation's prompt/contextBlock/images (replacing the fix-3
+	 *  fallback swap, which digest mode uses instead); images must carry the
+	 *  full rebuild set, since a fresh conversation holds no history. */
+	onSessionLoadFailed?: (info: {
+		sessionId: string;
+		error: unknown;
+	}) => { prompt: string; contextBlock?: { uri: string; text: string }; images?: Array<{ data: string; mimeType: string }> } | void;
 	signal?: AbortSignal;
 	/** Overall turn cap in minutes (default 10). Fractional values are valid
 	 *  (tests use sub-minute caps). 0 disables the cap. */
@@ -114,6 +141,13 @@ export interface TurnOutcome {
 	 *  guard (not a user abort, not a process crash). With sawResult false on
 	 *  a resumed conversation this marks the conversation as poisoned. */
 	deadline?: "timeout" | "stall";
+	/** ACP provenance, populated in #settle from the turn flags (??=) so
+	 *  every path - failTurn, connection exit, abort - carries them. The
+	 *  weaker meaning is documented: attempted = the driver invoked the
+	 *  prompt call, not that the transport wrote it. Stream-json leaves
+	 *  both undefined (nothing consumes them there). */
+	promptAttempted?: boolean;
+	promptTerminal?: boolean;
 }
 
 export interface TurnHandle {
