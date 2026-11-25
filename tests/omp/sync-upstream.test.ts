@@ -327,4 +327,47 @@ describe("sync-upstream.sh", { timeout: 30_000 }, () => {
 		expect(git(fork, "branch", "--list", "sync/*")).toBe("");
 		expect(git(fork, "rev-parse", "upstream")).toBe(split);
 	});
+
+	it("reports pending when upstream was pushed ahead of main together with a hand-resolved sync branch", () => {
+		commitUpstream("feat: add b", {
+			"src/b.ts": "export const b = true;\n",
+			"package.json": upstreamPackageJson("1.1.0"),
+			"CHANGELOG.md": changelog(["1.1.0", "1.0.0"]),
+		});
+		const split = splitOf(mono);
+		const short = split.slice(0, 7);
+		const base = git(fork, "rev-parse", "upstream");
+		// The maintainer resolved a conflict by hand and pushed both branches:
+		// upstream is already at the split and main does not contain it yet.
+		git(mono, "update-ref", "refs/fixture/split", split);
+		git(fork, "fetch", "-q", mono, "refs/fixture/split");
+		git(fork, "update-ref", "refs/heads/upstream", split);
+		git(fork, "update-ref", `refs/remotes/origin/sync/${short}`, git(fork, "rev-parse", "main"));
+
+		const r = runSync();
+
+		expect(r.code, r.stderr).toBe(0);
+		expect(r.out).toMatchObject({
+			status: "pending",
+			branch: `sync/${short}`,
+			upstream_sha: split,
+			upstream_version: "1.1.0",
+			base_sha: base,
+			base_version: "1.0.0",
+		});
+		expect(fs.readFileSync(path.join(tmp, "out/changelog-delta.md"), "utf8")).toContain("## [1.1.0]");
+	});
+
+	it("still refuses when upstream is ahead of main and no sync branch is pending", () => {
+		commitUpstream("feat: add b", { "src/b.ts": "export const b = true;\n" });
+		const split = splitOf(mono);
+		git(mono, "update-ref", "refs/fixture/split", split);
+		git(fork, "fetch", "-q", mono, "refs/fixture/split");
+		git(fork, "update-ref", "refs/heads/upstream", split);
+
+		const r = runSync();
+
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("main does not contain upstream");
+	});
 });
