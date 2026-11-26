@@ -590,6 +590,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				} catch { /* best-effort */ }
 			},
 			sendWake: sendTaskWake,
+			// Fresh arms only: a reload re-arm must still report tasks that
+			// finished while pi was down.
+			ignoreSettledAtArm: opts?.recordArmed !== false,
 			log: fileLog.log.bind(fileLog),
 		});
 		backgroundWatchers.set(conversationId, handle);
