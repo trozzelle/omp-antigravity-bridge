@@ -38,6 +38,12 @@ import type {
 } from "../driver-types.js";
 
 const LIFECYCLE_LIMIT = 24;
+/** Silence ceiling while a native tool call is in flight. agy sends no frames
+ *  while a foreground tool runs (zig builds, sleep-and-check waits), so the
+ *  idle window alone reads a working tool as a stall and kills agy mid-tool
+ *  (inkling2 2026-11-25: 9 kills in one session). Bounded so a tool whose
+ *  completion frame was lost cannot hold the turn forever. */
+const PENDING_TOOL_STALL_CAP_MS = 30 * 60_000;
 
 export interface AcpDriverOptions {
 	/** agy CLI binary. Tests may substitute node with a fake-server script. */
@@ -59,6 +65,9 @@ export interface AcpDriverOptions {
 	onPermissionRequest?: AcpPermissionHandler;
 	/** Park budget for one permission dialog (tests shrink it). */
 	permissionParkMs?: number;
+	/** Silence ceiling while a native tool call is pending (tests shrink it).
+	 *  Defaults to PENDING_TOOL_STALL_CAP_MS; never below the idle window. */
+	pendingToolStallCapMs?: number;
 	/** Standing policy consulted when the turn is not skipPermissions, or
 	 *  skipPermissions is overridden by gateActive: "auto" answers the first
 	 *  allow option synchronously, "deny" consults the human handler or
@@ -123,6 +132,8 @@ interface ActiveTurn {
 	overallRemainingMs: number | null;
 	overallTimer?: ReturnType<typeof setTimeout>;
 	idleTimer?: ReturnType<typeof setTimeout>;
+	/** Wall-clock instant of the last session/update frame (or turn start). */
+	lastActivityMs: number;
 	/** toolCallId → tool name + args + optional native diff (diff rides on
 	 *  the pending tool_call frame; updates don't repeat it). */
 	toolCalls: Map<string, { name: string; args: Record<string, unknown>; diff?: AcpEditDiff; mcpServer?: string }>;
@@ -546,6 +557,7 @@ export class AcpDriver implements TurnDriver {
 		const turn = this.#active;
 		if (!turn || turn.closed) return;
 		if (sessionId !== null && sessionId !== turn.sessionId) return;
+		turn.lastActivityMs = this.#nowMs();
 		if (turn.idleTimer) turn.idleTimer.refresh();
 		const mapped = mapUpdate(update);
 		if (!mapped) return;
@@ -796,6 +808,7 @@ export class AcpDriver implements TurnDriver {
 			parks: 0,
 			overallDeadline: null,
 			overallRemainingMs: null,
+			lastActivityMs: Date.now(),
 			toolCalls: new Map(),
 			sawToolError: false,
 			lastToolError: null,
@@ -873,7 +886,7 @@ export class AcpDriver implements TurnDriver {
 		this.#startOverallTimer(turn, remaining);
 	}
 
-	#armIdle(turn: ActiveTurn): void {
+	#armIdle(turn: ActiveTurn, delayMs?: number): void {
 		if (turn.idleTimer) clearTimeout(turn.idleTimer);
 		if (turn.parks > 0) return; // parked: idle timer resumes on unpark
 		const idleMs = this.#idleBudgetMs(turn);
@@ -881,11 +894,25 @@ export class AcpDriver implements TurnDriver {
 		if (idleMs <= 0) return;
 		turn.idleTimer = setTimeout(() => {
 			if (turn.closed) return;
-			this.#log("stall", { sessionId: turn.sessionId });
+			const silentMs = Math.max(idleMs, this.#nowMs() - turn.lastActivityMs);
+			const capMs = Math.max(idleMs, this.#opts.pendingToolStallCapMs ?? PENDING_TOOL_STALL_CAP_MS);
+			if (turn.toolCalls.size > 0 && silentMs < capMs) {
+				// A native tool is running, not stalled: re-arm and keep waiting,
+				// bounded by the pending-tool cap.
+				this.#log("stall-deferred", {
+					sessionId: turn.sessionId,
+					pendingTools: [...turn.toolCalls.values()].map((t) => t.name),
+					silentMs,
+				});
+				turn.idleTimer = undefined;
+				this.#armIdle(turn, Math.min(idleMs, capMs - silentMs));
+				return;
+			}
+			this.#log("stall", { sessionId: turn.sessionId, pendingTools: turn.toolCalls.size, silentMs });
 			this.#conn?.abortAll("idle stall");
 			this.#conn?.kill();
-			this.#failTurn(turn, `ACP stalled for ${(idleMs / 60_000) | 0}m with no output`);
-		}, idleMs);
+			this.#failTurn(turn, `ACP stalled for ${Math.max(1, Math.round(silentMs / 60_000))}m with no output`);
+		}, delayMs ?? idleMs);
 	}
 
 	#clearIdle(turn: ActiveTurn): void {
