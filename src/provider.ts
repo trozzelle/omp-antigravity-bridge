@@ -59,6 +59,7 @@ import { ompApprovalToolCall } from "./omp/approval-tool.js";
 import { isOmpHost } from "./omp/host.js";
 import { isEphemeralCall, ompHandoffBody } from "./omp/oneshot.js";
 import { ompReexecArgs } from "./omp/native-reexec.js";
+import { stampContextTokens } from "./omp/usage.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -2703,6 +2704,7 @@ async function runTurnDriver(
 	// the window. Clamp before emitting stop so pi-ai's isContextOverflow()
 	// Case 2 does not trigger a phantom overflow compaction on a healthy turn.
 	clampOverflowUsage(blocks.partial.usage, model.contextWindow);
+	stampContextTokens(blocks.partial.usage);
 	finalize(stream, blocks, "stop");
 }
 
