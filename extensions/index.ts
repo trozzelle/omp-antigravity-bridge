@@ -200,7 +200,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// to stderr.
 	const rawFileLog = fileLog.log.bind(fileLog);
 	fileLog.log = (event, data, level) => {
-		rawFileLog(event, data, level);
+		// Turn-killing stalls/timeouts are failures, not routine: persist them
+		// even in the default error-only log (the toast below still fires).
+		const turnKill = event === "stall" || event === "timeout" || event.startsWith("stall:") || event.startsWith("timeout:");
+		rawFileLog(event, data, level === "warn" && turnKill ? "error" : level);
 		if (level !== "warn") return;
 		if (event.startsWith("abort:") || event === "connection-exited") return;
 		const d = (data ?? {}) as Record<string, unknown>;
