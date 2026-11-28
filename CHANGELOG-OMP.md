@@ -46,3 +46,4 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: load on OMP 19.2, which refuses `@earendil-works/pi-tui` anywhere in an extension's import graph: tool and card renders return width-wrapped rows objects, the `/agy` settings menu, engine picker and artifact/task browsers use OMP's native selector, and the pi dialog kit loads only under pi (load)
 - omp: keep OMP 19.1 text wrapping by falling back from `/text/width` to the old root helper; CI tests 19.2.1 and the pi-only legacy modules are structurally typed (load)
 - omp: add the `smoke:pi` npm script the contributor guides document; it runs `scripts/smoke-in-pi.sh` (packaging) [upstreamable]
+- omp: show each `/agy` settings row's current value in its label on OMP 19.2: OMP's selector hides option descriptions once the list overflows, so Enter cycled values with no visible change (load)
