@@ -20,6 +20,7 @@ export {
 	registerCardRenderers,
 } from "./cards.js";
 export { toNativeSteps, type NativeSteps } from "./config.js";
+export type { DialogRow } from "./dialog-types.js";
 export {
 	createOmpOneshots,
 	isOmpWorkerRealm,
@@ -29,6 +30,8 @@ export {
 	watchOmpModelChanges,
 } from "./extension.js";
 export { isOmpHost } from "./host.js";
+export { importLegacyDialogs } from "./legacy-ui.js";
 export { NATIVE_STEPS_ROW_ID, nativeStepsPickerRows, nativeStepsSettingsRows, runStepsCommand } from "./native-steps.js";
 export { showReport } from "./report.js";
+export { ompSettingsMenu } from "./pickers.js";
 export { sessionKindOf, type SessionKind } from "./runtime.js";

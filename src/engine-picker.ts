@@ -9,7 +9,8 @@
 // (dialogChoice): one decision statement, a closed option list, esc cancels.
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { dialogChoice, type ChoiceOption, type DialogContext, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import type { ChoiceOption, DialogContext, DialogRow } from "./omp/dialog-types.js";
+import { hostDialogChoice } from "./omp/pickers.js";
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_ENGINE, type Engine } from "./config.js";
@@ -151,6 +152,7 @@ function asDialogContext(ui: ExtensionUIContext): DialogContext {
  *  chosen engine, or undefined when the user pressed esc (decide later -
  *  nothing is persisted). */
 export async function showEnginePicker(ctx: ExtensionUIContext): Promise<Engine | undefined> {
+	const dialogChoice = await hostDialogChoice();
 	const picked = await dialogChoice(asDialogContext(ctx), "Antigravity Bridge: choose your engine", {
 		description: ENGINE_PICKER_INTRO,
 		options: ENGINE_PICKER_ITEMS,

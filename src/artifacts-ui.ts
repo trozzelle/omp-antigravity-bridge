@@ -7,9 +7,9 @@
 // agy's to manage.
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
-import { dialogBlocked } from "@estebanforge/pi-tui-dialogs";
+import type { SelectItem } from "./omp/dialog-types.js";
+import { importLegacyBrowserKit } from "./omp/legacy-ui.js";
+import { ompArtifactsBrowser } from "./omp/pickers.js";
 import type { AgyArtifact } from "./artifacts.js";
 
 export type ArtifactsBrowserAction =
@@ -42,6 +42,9 @@ export async function showArtifactsBrowser(
 	artifacts: AgyArtifact[],
 ): Promise<ArtifactsBrowserAction> {
 	const items = artifactItems(artifacts);
+	const omp = await ompArtifactsBrowser(ctx, artifacts, items);
+	if (omp) return omp;
+	const { DynamicBorder, Container, SelectList, Spacer, Text, dialogBlocked } = await importLegacyBrowserKit();
 	return ctx.custom<ArtifactsBrowserAction>((tui, theme, _keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -57,7 +60,7 @@ export async function showArtifactsBrowser(
 			scrollInfo: (t: string) => theme.fg("dim", t),
 			noMatch: (t: string) => theme.fg("warning", t),
 		});
-		list.onSelect = (item) => done({ type: "open", artifact: artifacts[Number(item.value)] });
+		list.onSelect = (item: SelectItem) => done({ type: "open", artifact: artifacts[Number(item.value)] });
 		list.onCancel = () => done({ type: "close" });
 		container.addChild(list);
 

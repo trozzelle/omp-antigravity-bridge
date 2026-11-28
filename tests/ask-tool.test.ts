@@ -501,5 +501,7 @@ test("refusal results carry details.refused and render with the error glyph", as
 		{ expanded: false, isPartial: false },
 		{ fg: (_style: string, s: string) => s },
 	);
-	assert.match(String((rendered as { text?: string }).text ?? rendered), /✗/);
+	// The migrated renderer implements the host-independent rows contract.
+	const rowsRenderer = rendered as { render(width: number): string[] };
+	assert.match(rowsRenderer.render(200).join("\n"), /✗/);
 });

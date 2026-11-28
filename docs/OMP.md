@@ -48,6 +48,10 @@ OMP shows an Antigravity reply as one message, and anything an extension adds wh
 
 `/agy steps cards` (or `acp.nativeSteps: "cards"`, `AGY_NATIVE_STEPS=cards`) brings back the separate cards, drawn below the reply. Cards from either setting, and from earlier sessions, are kept out of the model's context and redrawn on resume.
 
+### Dialogs
+
+The `/agy` settings menu, the first-run engine picker and the `/agy artifacts` and `/agy tasks` browsers use OMP's own selector instead of upstream's framed dialogs. In the settings menu, Enter cycles the highlighted setting to its next value (or opens the engine picker from **Switch engine**) and Esc closes the menu and saves. Rescan is a row in the artifact and task browsers.
+
 ### Model-switch notice
 
 The notice about switching into an Antigravity model mid-session appears when you send the next prompt, not at the moment you pick the model.

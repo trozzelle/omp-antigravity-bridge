@@ -4,7 +4,7 @@
 // The display rule itself is nativeStepMode() in cards.ts.
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { DialogRow } from "@estebanforge/pi-tui-dialogs";
+import type { DialogRow } from "./dialog-types.js";
 import { configPath, loadConfig, saveConfig, type AgyConfig } from "../config.js";
 import { toNativeSteps } from "./config.js";
 import { nativeStepMode } from "./cards.js";

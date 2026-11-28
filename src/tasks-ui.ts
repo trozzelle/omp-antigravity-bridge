@@ -6,9 +6,9 @@
 // content, not overlay content.
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
-import { dialogBlocked } from "@estebanforge/pi-tui-dialogs";
+import type { SelectItem } from "./omp/dialog-types.js";
+import { importLegacyBrowserKit } from "./omp/legacy-ui.js";
+import { ompTasksBrowser } from "./omp/pickers.js";
 import type { AgyTask } from "./tasks.js";
 
 export type TasksBrowserAction = { type: "rescan" } | { type: "close" };
@@ -40,6 +40,9 @@ export async function showTasksBrowser(
 	livenessKnown: boolean,
 ): Promise<TasksBrowserAction> {
 	const items = taskItems(tasks);
+	const omp = await ompTasksBrowser(ctx, items, livenessKnown);
+	if (omp) return omp;
+	const { DynamicBorder, Container, SelectList, Spacer, Text, dialogBlocked } = await importLegacyBrowserKit();
 	return ctx.custom<TasksBrowserAction>((tui, theme, _keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
