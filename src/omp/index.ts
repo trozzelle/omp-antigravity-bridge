@@ -31,6 +31,7 @@ export {
 } from "./extension.js";
 export { isOmpHost } from "./host.js";
 export { importLegacyDialogs } from "./legacy-ui.js";
+export { applySettingsChange, type PendingConfig } from "./settings.js";
 export { NATIVE_STEPS_ROW_ID, nativeStepsPickerRows, nativeStepsSettingsRows, runStepsCommand } from "./native-steps.js";
 export { showReport } from "./report.js";
 export { ompSettingsMenu } from "./pickers.js";

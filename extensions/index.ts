@@ -123,7 +123,7 @@ import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
 import {
-	NATIVE_EVENT_CARD, NATIVE_STEPS_ROW_ID, POLL_RUN_CARD, acpPermissionPolicy, createOmpOneshots, effectiveGateMode, emitDisplayCard, importLegacyDialogs, isOmpHost,
+	NATIVE_EVENT_CARD, NATIVE_STEPS_ROW_ID, POLL_RUN_CARD, acpPermissionPolicy, applySettingsChange, createOmpOneshots, effectiveGateMode, emitDisplayCard, importLegacyDialogs, isOmpHost,
 	isOmpWorkerRealm, nativeEventSummary, nativeStepMode, nativeStepTrace, nativeStepsPickerRows, nativeStepsSettingsRows, ompRefusesPatchCleanup, ompSettingsMenu,
 	ompSessionKind, pollRunSummary, readOmpApprovalSettings, registerCardContextFilter, registerCardRenderers, runStepsCommand, sessionKindOf,
 	setupOmpHost, showReport, toNativeSteps, watchOmpModelChanges, wireOmpApprovalGate, type DialogRow, type NativeSteps, type SessionKind,
@@ -2103,73 +2103,38 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		},
 	];
 
-	// Cycled rows land in `pending`; both hosts' menus call this.
-	const onChange = (id: string, newValue: string): void => {
-		if (id === "mode") {
-			pending.mode = newValue as AgyMode;
-		} else if (id === "readonly") {
-			pending.readOnly = newValue === "on";
-		} else if (id === "permissions") {
-			pending.skipPermissions = newValue === "auto-approved";
-		} else if (id === "model") {
-			pending.defaultModel = newValue;
-		} else if (id === "thinking") {
-			pending.defaultThinking = newValue as ThinkingTier;
-		} else if (id === "ask") {
-			pending.askTool = newValue === "on";
-		} else if (id === "web") {
-			pending.webTools = newValue === "on";
-		} else if (id === "bridge") {
-			pending.bridgeTools = newValue as BridgeTools;
-		} else if (id === "turn-cap") {
-			pending.turnTimeoutMin = Number(newValue);
-		} else if (id === "digest") {
-			pending.digest = newValue === "on";
-		} else if (id === "system-prompt") {
-			pending.systemPrompt = newValue === "on";
-		} else if (id === "acp-session-timeout") {
-			pending.acp = {
-				...pending.acp,
-				sessionTimeoutMs: Number(newValue),
-			};
-		} else if (id === "acp-session-retry") {
-			pending.acp = {
-				...pending.acp,
-				sessionRetryOnTimeout: newValue === "on",
-			};
-		} else if (id === NATIVE_STEPS_ROW_ID) {
-			pending.acp = { ...pending.acp, nativeSteps: toNativeSteps(newValue) };
-		}
-	};
-
 	const subtitle = `Config file: ${configPath()} — changes save when the dialog closes`;
 	// OMP 19.2 cannot load the pi dialog kit; its native selector edits the same rows.
 	const dialogs = isOmpHost() ? undefined : await importLegacyDialogs();
-	const resolved = dialogs === undefined ? await ompSettingsMenu(ui, { title: "Antigravity provider", subtitle, rows, onChange }) : await ui.custom<string | undefined>(
-		(host, theme, _kb, done) => {
-			const menu = new dialogs.DialogMenu(
-				host,
-				theme,
-				{
-					title: "Antigravity provider",
-					subtitle,
-					rows,
-					footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
-					onChange,
-				},
-				(rowId: string) => done(rowId),
-			);
-			return {
-				render: (w: number) => menu.render(w),
-				invalidate: () => menu.invalidate(),
-				handleInput: (data: string) => {
-					menu.handleInput(data);
-					host.requestRender();
-				},
-			};
-		},
-		{ ...dialogs.DIALOG_OPTIONS, blocked: dialogs.dialogBlocked("Antigravity provider") },
-	);
+	const resolved = dialogs === undefined
+		? await ompSettingsMenu(ui, { title: "Antigravity provider", subtitle, rows, onChange: (id, newValue) => applySettingsChange(pending, id, newValue) })
+		: await ui.custom<string | undefined>(
+			(host, theme, _kb, done) => {
+				const menu = new dialogs.DialogMenu(
+					host,
+					theme,
+					{
+						title: "Antigravity provider",
+						subtitle,
+						rows,
+						footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
+						onChange: (id: string, newValue: string) => {
+							applySettingsChange(pending, id, newValue);
+						},
+					},
+					(rowId: string) => done(rowId),
+				);
+				return {
+					render: (w: number) => menu.render(w),
+					invalidate: () => menu.invalidate(),
+					handleInput: (data: string) => {
+						menu.handleInput?.(data);
+						host.requestRender();
+					},
+				};
+			},
+			{ ...dialogs.DIALOG_OPTIONS, blocked: dialogs.dialogBlocked("Antigravity provider") },
+		);
 
 	if (Object.keys(pending).length === 0) {
 		if (resolved === ENGINE_SETTINGS_ROW_ID) await runEngineModal(ui, ctx);

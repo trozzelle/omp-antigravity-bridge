@@ -17,9 +17,8 @@ type Wrap = (text: string, width: number) => string[];
 let wrapText: Wrap | undefined;
 
 /** Load the host's wrap once per process. Under pi a failure propagates (its
- *  pi-tui is always present). Under OMP the module is served by OMP itself and
- *  is absent only outside it (Node tests on an OMP-shaped host); rows then stay
- *  unwrapped and OMP cuts them. */
+ *  pi-tui is always present). Under OMP 19.1 the root module still exports
+ *  `wrapTextWithAnsi`; 19.2 moved it to `/text/width`. */
 export async function loadTextWrap(): Promise<void> {
 	if (wrapText) return;
 	if (!isOmpHost()) {
@@ -27,7 +26,15 @@ export async function loadTextWrap(): Promise<void> {
 		return;
 	}
 	try {
-		// Literal specifier: OMP rewrites only literal imports onto its own package.
+		const legacyRoot = await import("@oh-my-pi/pi-tui");
+		if (typeof legacyRoot.wrapTextWithAnsi === "function") {
+			wrapText = legacyRoot.wrapTextWithAnsi as Wrap;
+			return;
+		}
+	} catch {
+		// Not running under OMP, or no root helper on this version.
+	}
+	try {
 		wrapText = (await import("@oh-my-pi/pi-tui/text/width")).wrap;
 	} catch {
 		// Not running under OMP.

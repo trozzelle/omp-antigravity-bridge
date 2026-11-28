@@ -2,7 +2,7 @@
 
 This fork runs the Antigravity bridge inside [OMP (oh-my-pi)](https://github.com/can1357/oh-my-pi). Features match upstream; the differences below come from how OMP differs from pi. Install and usage: [README](../README.md).
 
-Tested with OMP 19.1.0 and agy 1.5.14.
+Tested with OMP 19.2.1 and agy 1.5.14.
 
 Settings, logs and session bindings live under OMP's directories: `~/.omp/agent/antigravity-bridge/` and `~/.omp/extensions-data/estebanforge/pi-antigravity-bridge/logs/`. Model ids leave out the thinking tier (`antigravity/gemini-3-8-flash`, not `antigravity/gemini-3-8-flash-low`); choose the tier with OMP's thinking level (`:low`, `:high`, …).
 

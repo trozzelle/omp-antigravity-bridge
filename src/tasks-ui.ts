@@ -81,7 +81,7 @@ export async function showTasksBrowser(
 					done({ type: "rescan" });
 					return;
 				}
-				list.handleInput(data);
+				list.handleInput?.(data);
 				tui.requestRender();
 			},
 		};

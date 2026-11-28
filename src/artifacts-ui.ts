@@ -79,7 +79,7 @@ export async function showArtifactsBrowser(
 					done({ type: "rescan" });
 					return;
 				}
-				list.handleInput(data);
+				list.handleInput?.(data);
 				tui.requestRender();
 			},
 		};

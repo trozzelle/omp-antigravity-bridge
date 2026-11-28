@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { showArtifactsBrowser } from "../../src/artifacts-ui.js";
 import type { AgyArtifact } from "../../src/artifacts.js";
 import { showTasksBrowser } from "../../src/tasks-ui.js";
@@ -32,6 +32,26 @@ const task: AgyTask = {
 };
 
 afterEach(() => __setHostForTests(undefined));
+
+function captureCustom<T>(): { ui: unknown; view: () => unknown } {
+	let captured: unknown;
+	const ui = {
+		custom: (
+			factory: (host: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
+			_options?: unknown,
+		) =>
+			new Promise<T>((resolve) => {
+				const done = (value: T) => resolve(value);
+				captured = factory(
+					{ requestRender() {} },
+					{ fg: (_c: string, t: string) => t, bold: (t: string) => t },
+					undefined,
+					done,
+				);
+			}),
+	};
+	return { ui, view: () => captured };
+}
 
 describe("OMP 19.2 native browsers", () => {
 	it("opens the artifact selected by its label", async () => {
@@ -89,5 +109,29 @@ describe("textRows", () => {
 		for (const row of narrow) expect(plain(row).length).toBeLessThanOrEqual(12);
 		expect(plain(narrow.join(" ")).replace(/\s+/g, " ").trim()).toBe(`${"word ".repeat(20)}short`);
 		expect(rows.render(200).map(plain)).toEqual(["word ".repeat(20).trim(), "short"]);
+	});
+});
+
+describe("pi overlays", () => {
+	it("drives the artifact overlay's rescan action", async () => {
+		__setHostForTests("pi");
+		const { ui, view } = captureCustom<unknown>();
+		const pending = showArtifactsBrowser(ui as never, [artifact]);
+		await vi.waitFor(() => {
+			if (!view()) throw new Error("overlay not captured");
+		});
+		(view() as { handleInput(data: string): void }).handleInput("r");
+		await expect(pending).resolves.toEqual({ type: "rescan" });
+	});
+
+	it("drives the task overlay's rescan action", async () => {
+		__setHostForTests("pi");
+		const { ui, view } = captureCustom<unknown>();
+		const pending = showTasksBrowser(ui as never, [task], true);
+		await vi.waitFor(() => {
+			if (!view()) throw new Error("overlay not captured");
+		});
+		(view() as { handleInput(data: string): void }).handleInput("r");
+		await expect(pending).resolves.toEqual({ type: "rescan" });
 	});
 });
