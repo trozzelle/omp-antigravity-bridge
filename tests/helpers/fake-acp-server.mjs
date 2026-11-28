@@ -455,6 +455,26 @@ async function streamPrompt() {
   streaming = true;
   promptCount += 1;
   if (scenario === "slow") return; // never emits, never completes
+  if (scenario === "tool-hang") {
+    // A native tool (long foreground run_command) opens and never reports
+    // back: agy sends no frames while the tool runs.
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          toolCallId: "hang-1",
+          title: "zig build test",
+          kind: "execute",
+          status: "pending",
+          rawInput: { CommandLine: "zig build test", WaitMsBeforeAsync: 0 },
+          sessionUpdate: "tool_call",
+        },
+      },
+    });
+    return;
+  }
   if (scenario === "cancel") {
     notifyChunk("C1");
     const t = setInterval(() => {

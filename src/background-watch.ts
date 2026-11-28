@@ -20,6 +20,9 @@ import { UNTRUSTED_BANNER } from "@estebanforge/pi-ask-shared";
 export const WATCH_POLL_MS = 5_000;
 export const WATCH_QUIET_MS = 30_000;
 export const WATCH_CAP_MS = 30 * 60_000;
+/** A log written this recently at arm time is kept even without a holder: the
+ *  writer may be between reopens. */
+export const WATCH_ARM_GRACE_MS = 2_000;
 
 export interface BackgroundWatchOptions {
 	conversationId: string;
@@ -34,6 +37,13 @@ export interface BackgroundWatchOptions {
 	 *  the extension uses it for the persisted settled entry. */
 	onSettle?: (result: { outcome: WatchOutcome; taskIds: number[] }) => void;
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
+	/** Fresh arm right after the turn settled: tasks that already finished
+	 *  in-turn (no holder, log idle) are the model's own awaited work, so they
+	 *  are dropped at the first poll instead of waking the model to say "already
+	 *  completed" (inkling2 2026-11-25: 19 of 20 wakes). Reload re-arms leave
+	 *  this off: a task that finished while pi was down is news. Ignored when
+	 *  lsof is unavailable (liveness unknown). */
+	ignoreSettledAtArm?: boolean;
 	sleep?: (ms: number) => Promise<void>;
 	now?: () => number;
 	pollMs?: number;
@@ -99,12 +109,15 @@ export function armBackgroundWatch(opts: BackgroundWatchOptions): BackgroundWatc
 
 	const loop = async (): Promise<void> => {
 		const tracked = new Map<number, TrackedTask>();
+		const ignored = new Set<number>();
+		let firstPoll = true;
 		let everSeen = false;
 		while (!stopped) {
 			if (now() - startedAt >= capMs) {
 				await finish("gaveup", tracked);
 				return;
 			}
+			const scanAt = now();
 			let tasks: AgyTask[];
 			try {
 				tasks = await opts.listTasks(opts.conversationDir);
@@ -112,7 +125,21 @@ export function armBackgroundWatch(opts: BackgroundWatchOptions): BackgroundWatc
 				opts.log?.("background-watch-scan-error", { conversationId: opts.conversationId, error: err instanceof Error ? err.message : String(err) }, "warn");
 				tasks = [];
 			}
-			const current = tasks.filter((t) => t.modifiedMs >= opts.turnStartMs);
+			let current = tasks.filter((t) => t.modifiedMs >= opts.turnStartMs);
+			if (firstPoll && opts.ignoreSettledAtArm) {
+				for (const t of current) {
+					if (t.livenessKnown && !t.active && scanAt - t.modifiedMs >= WATCH_ARM_GRACE_MS) ignored.add(t.id);
+				}
+				if (current.length > 0 && current.every((t) => ignored.has(t.id))) {
+					// Every task this turn started finished before the turn ended:
+					// nothing left to report. Silent stop, no wake.
+					opts.log?.("background-watch-already-settled", { conversationId: opts.conversationId, tasks: [...ignored] }, "info");
+					stopped = true;
+					return;
+				}
+			}
+			firstPoll = false;
+			current = current.filter((t) => !ignored.has(t.id));
 			if (current.length > 0) everSeen = true;
 			const seen = new Set<number>();
 			for (const t of current) {
