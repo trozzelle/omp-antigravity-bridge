@@ -129,6 +129,43 @@ describe("/agy tasks and /agy artifacts conversation resolution", () => {
 	});
 });
 
+describe("/agy settings on OMP 19.2", () => {
+	it("cycles a setting with the native selector, reopens on that row and saves it when the picker closes", async () => {
+		const notes: Array<{ message: string; level: string }> = [];
+		const answers = ["Context digest", undefined];
+		const selections: Array<Array<{ label: string; description?: string }>> = [];
+		const initialIndices: Array<number | undefined> = [];
+		const ui = {
+			notify: (message: string, level: string) => notes.push({ message, level }),
+			select: async (
+				_title: string,
+				options: Array<{ label: string; description?: string }>,
+				dialogOptions?: { initialIndex?: number },
+			) => {
+				selections.push(options);
+				initialIndices.push(dialogOptions?.initialIndex);
+				return answers.shift();
+			},
+		};
+		const agy = await loadAgyCommand();
+		await agy("", {
+			mode: "tui",
+			hasUI: true,
+			cwd: root,
+			ui,
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		});
+
+		expect(selections).toHaveLength(2);
+		const digest = selections[1]?.find(option => option.label === "Context digest");
+		expect(digest?.description).toMatch(/\boff\b/);
+		expect(initialIndices).toEqual([0, selections[1]?.findIndex(option => option.label === "Context digest")]);
+		const savedConfig = JSON.parse(fs.readFileSync(path.join(root, "agent", "antigravity-bridge", "config.json"), "utf8"));
+		expect(savedConfig.digest).toBe(false);
+		expect(notes.some(note => note.message === "Saved: digest=off")).toBe(true);
+	});
+});
+
 describe("/agy tasks tail", () => {
 	it("/agy tasks tail <id> prints that task's log tail", async () => {
 		bindSession();

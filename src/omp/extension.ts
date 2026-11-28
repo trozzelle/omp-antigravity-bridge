@@ -7,13 +7,16 @@ import { loadOmpSettingsLookup } from "./approval-settings.js";
 import { initHost, isOmpHost } from "./host.js";
 import { ModelChangeTracker } from "./model-change.js";
 import { createOneshotProvider, type OneshotProviderDeps } from "./oneshot-driver.js";
+import { loadTextWrap } from "./rows.js";
 import { isWorkerRealm, type SessionKind } from "./runtime.js";
 
-/** Detect the host, then (OMP) load OMP's settings registry: approval mode,
- *  policies and restricted folders, read synchronously later by the gate and
- *  the ACP permission policy. First thing the factory runs. */
+/** Detect the host, load the host's text wrap for textRows renders (both
+ *  hosts), then (OMP) load OMP's settings registry: approval mode, policies
+ *  and restricted folders, read synchronously later by the gate and the ACP
+ *  permission policy. First thing the factory runs. */
 export async function setupOmpHost(pi: ExtensionAPI): Promise<void> {
 	initHost(pi);
+	await loadTextWrap();
 	if (isOmpHost()) await loadOmpSettingsLookup();
 }
 

@@ -19,8 +19,8 @@ concurrency:
 
 env:
   # Tested OMP release, bumped deliberately (README states it too).
-  OMP_VERSION: "19.1.0"
-  # omp 19.1.0 requires Bun >= 1.4.4.
+  OMP_VERSION: "19.2.1"
+  # omp 19.2.1 requires Bun >= 1.4.4.
   BUN_VERSION: "1.4.5"
   NODE_VERSION: "22"
 

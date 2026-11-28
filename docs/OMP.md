@@ -2,7 +2,7 @@
 
 This fork runs the Antigravity bridge inside [OMP (oh-my-pi)](https://github.com/can1357/oh-my-pi). Features match upstream; the differences below come from how OMP differs from pi. Install and usage: [README](../README.md).
 
-Tested with OMP 19.1.0 and agy 1.5.14.
+Tested with OMP 19.2.1 and agy 1.5.14.
 
 Settings, logs and session bindings live under OMP's directories: `~/.omp/agent/antigravity-bridge/` and `~/.omp/extensions-data/estebanforge/pi-antigravity-bridge/logs/`. Model ids leave out the thinking tier (`antigravity/gemini-3-8-flash`, not `antigravity/gemini-3-8-flash-low`); choose the tier with OMP's thinking level (`:low`, `:high`, …).
 
@@ -47,6 +47,10 @@ The `activate_skill` catalog is the session's real skill list, including skills 
 OMP shows an Antigravity reply as one message, and anything an extension adds while that message is streaming waits until it ends. Cards for agy's native tool steps (ACP engine) and bridge poll runs would therefore all appear below the finished reply. Under OMP the bridge writes each step into the reply's thinking instead: a `✓`/`✗` line with the tool name and its file or command, plus the diff for an edit, in the order the steps ran, so the reply's text stays directly above the input. Hide thinking and the steps are hidden too. A poll run shows only in the footer while it lasts; the polled tool's result arrives as a normal OMP tool card.
 
 `/agy steps cards` (or `acp.nativeSteps: "cards"`, `AGY_NATIVE_STEPS=cards`) brings back the separate cards, drawn below the reply. Cards from either setting, and from earlier sessions, are kept out of the model's context and redrawn on resume.
+
+### Dialogs
+
+The `/agy` settings menu, the first-run engine picker and the `/agy artifacts` and `/agy tasks` browsers use OMP's own selector instead of upstream's framed dialogs. In the settings menu, Enter cycles the highlighted setting to its next value (or opens the engine picker from **Switch engine**) and Esc closes the menu and saves. Rescan is a row in the artifact and task browsers.
 
 ### Model-switch notice
 

@@ -15,7 +15,7 @@
 
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { textRows, type RowsComponent } from "./rows.js";
 import type { AgyConfig } from "../config.js";
 import type { NativeSteps } from "./config.js";
 import { POLL_TOOL_NAME, type NativeDisplayEvent } from "../provider.js";
@@ -40,8 +40,8 @@ export interface CardRenderOptions {
 	expanded: boolean;
 }
 
-export type CardEntryRenderer = (entry: { data?: unknown }, options: CardRenderOptions, theme: CardTheme) => Component | undefined;
-export type CardMessageRenderer = (message: { details?: unknown }, options: CardRenderOptions, theme: CardTheme) => Component | undefined;
+export type CardEntryRenderer = (entry: { data?: unknown }, options: CardRenderOptions, theme: CardTheme) => RowsComponent | undefined;
+export type CardMessageRenderer = (message: { details?: unknown }, options: CardRenderOptions, theme: CardTheme) => RowsComponent | undefined;
 
 /** Display-only custom message: drawn and saved, never sent to the model. */
 export interface CardMessage {
@@ -85,7 +85,7 @@ export function sanitizeCardText(value: string): string {
 const sanitizeOptional = (value: string | undefined): string | undefined => (value === undefined ? undefined : sanitizeCardText(value));
 
 /** Native Antigravity tool step: status mark, tool name, most specific detail; expanded adds path, diff and output. */
-export function renderNativeEventCard(data: unknown, expanded: boolean, theme: CardTheme): Text {
+export function renderNativeEventCard(data: unknown, expanded: boolean, theme: CardTheme): RowsComponent {
 	const raw = isNativeDisplayEvent(data) ? data : undefined;
 	const event = raw && { ...raw, command: sanitizeOptional(raw.command), output: sanitizeOptional(raw.output), diff: sanitizeOptional(raw.diff) };
 	// Collapsed detail: most-specific signal wins (path, command, agy's own
@@ -106,11 +106,11 @@ export function renderNativeEventCard(data: unknown, expanded: boolean, theme: C
 			for (const line of event.output.split("\n")) lines.push(theme.fg("toolOutput", line));
 		}
 	}
-	return new Text(lines.join("\n"), 0, 0);
+	return textRows(lines.join("\n"));
 }
 
 /** Collapsed poll burst: one ♊︎-marked counted line instead of one card per poll. */
-export function renderPollRunCard(data: unknown, expanded: boolean, theme: CardTheme): Text {
+export function renderPollRunCard(data: unknown, expanded: boolean, theme: CardTheme): RowsComponent {
 	const run = isPollRunData(data) ? data : undefined;
 	const count = run?.count ?? 0;
 	const label = `Poll ${run?.target ?? "bridge call"} (x${count}${run?.state === "failed" ? ", failed" : ""})`;
@@ -119,7 +119,7 @@ export function renderPollRunCard(data: unknown, expanded: boolean, theme: CardT
 		const time = (iso: string): string => new Date(iso).toLocaleTimeString();
 		lines.push(theme.fg("dim", `${count} ${count === 1 ? "poll" : "polls"}, ${time(run.firstAt)} → ${time(run.lastAt)}`));
 	}
-	return new Text(lines.join("\n"), 0, 0);
+	return textRows(lines.join("\n"));
 }
 
 /** Plain-text line stored as the message content; shown where the renderer does not run. */

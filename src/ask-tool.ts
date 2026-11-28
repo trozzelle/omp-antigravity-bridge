@@ -17,7 +17,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { textRows } from "./omp/rows.js";
 import { contentText, type ThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
@@ -757,13 +757,13 @@ export async function registerAskAntigravityTool(
 			if (prompt.length > PREVIEW_MAX_CHARS || prompt.split("\n").length > PREVIEW_MAX_LINES) {
 				text += theme.fg("dim", " …");
 			}
-			return new Text(text, 0, 0);
+			return textRows(text);
 		},
 		renderResult(result, { expanded, isPartial }, theme, context) {
 			const d = result.details as AgyDetails | undefined;
 			if (isPartial) {
 				const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
-				return new Text(theme.fg("success", "◉ AskAntigravity ") + theme.fg("muted", status), 0, 0);
+				return textRows(theme.fg("success", "◉ AskAntigravity ") + theme.fg("muted", status));
 			}
 
 			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
@@ -792,7 +792,7 @@ export async function registerAskAntigravityTool(
 					text += `\n${theme.fg("dim", `… (${context.keyHint("app.tools.expand", "to expand")})`)}`;
 				}
 			}
-			return new Text(text, 0, 0);
+			return textRows(text);
 		},
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			// Circular-delegation guard: refuse if already running through the

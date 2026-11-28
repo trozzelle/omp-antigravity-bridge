@@ -1,7 +1,8 @@
 // Engine picker tests: the first-run predicate and the picker copy/order.
 // The overlay itself is TUI-bound; its logic lives in the two exports below.
 
-import { test } from "vitest";
+import { afterEach, test, vi } from "vitest";
+import { __setHostForTests } from "../src/omp/host.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -18,6 +19,8 @@ import {
 	showEnginePicker,
 	toEngine,
 } from "../src/engine-picker.js";
+
+afterEach(() => __setHostForTests(undefined));
 
 function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-picker-")), "config.json");
@@ -74,9 +77,13 @@ test("picker: saved-engine toast requires only the authenticated agy CLI", () =>
 });
 
 test("picker: showEnginePicker resolves the picked engine, undefined on esc", async () => {
+	__setHostForTests("pi");
 	// Captured ui.custom fake: hand the view the keys SelectList answers to.
 	// ExtensionUIContext is structural here; only custom() is exercised.
-	const capture = (): { ui: unknown; view: () => { handleInput(data: string): void } } => {
+	const capture = (): {
+		ui: unknown;
+		view: () => { handleInput(data: string): void };
+	} => {
 		let captured: { handleInput(data: string): void } | undefined;
 		const ui = {
 			custom: (
@@ -95,15 +102,33 @@ test("picker: showEnginePicker resolves the picked engine, undefined on esc", as
 
 	const enter = capture();
 	const enterPick = showEnginePicker(enter.ui as never);
-	await Promise.resolve();
-	enter.view().handleInput("\r");
+	const enterView = await vi.waitFor(() => {
+		assert.ok(enter.view());
+		return enter.view();
+	});
+	enterView.handleInput("\r");
 	assert.equal(await enterPick, "acp"); // first item, the default engine
 
 	const esc = capture();
 	const escPick = showEnginePicker(esc.ui as never);
-	await Promise.resolve();
-	esc.view().handleInput("\x1b");
+	const escView = await vi.waitFor(() => {
+		assert.ok(esc.view());
+		return esc.view();
+	});
+	escView.handleInput("\x1b");
 	assert.equal(await escPick, undefined);
+});
+
+test("picker: OMP 19.2 resolves the native selector's engine label", async () => {
+	__setHostForTests("omp");
+	const ui = {
+		select: async (_title: string, options: Array<{ label: string; description?: string }>) => {
+			assert.equal(options.length, 2);
+			return options[1]?.label;
+		},
+	};
+	assert.equal(await showEnginePicker(ui as never), "stream-json");
+	assert.equal(await showEnginePicker({ select: async () => undefined } as never), undefined);
 });
 
 test("picker: agy binary detection covers PATH and explicit paths", () => {
