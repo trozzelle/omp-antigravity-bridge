@@ -4,6 +4,7 @@ import type { AgyArtifact } from "../../src/artifacts.js";
 import { showTasksBrowser } from "../../src/tasks-ui.js";
 import type { AgyTask } from "../../src/tasks.js";
 import { __setHostForTests } from "../../src/omp/host.js";
+import { ompSettingsMenu } from "../../src/omp/pickers.js";
 import { loadTextWrap, textRows } from "../../src/omp/rows.js";
 
 interface SelectOption {
@@ -96,6 +97,41 @@ describe("OMP 19.2 native browsers", () => {
 			"/agy tasks tail <id> for a log",
 		]);
 		expect(options[0]?.description).toMatch(/^42B · last write \d\d:\d\d$/);
+	});
+});
+
+describe("OMP settings menu", () => {
+	it("shows each row's value in its label, which survives OMP hiding descriptions, and cycles it on enter", async () => {
+		const shown: string[][] = [];
+		const picks = [1, 1, undefined];
+		const ui = {
+			select: async (_title: string, options: SelectOption[], dialog: { initialIndex?: number }) => {
+				shown.push(options.map((option) => option.label));
+				const pick = picks.shift();
+				if (shown.length > 1) expect(dialog.initialIndex).toBe(1);
+				return pick === undefined ? undefined : options[pick]?.label;
+			},
+		};
+		const changes: Array<[string, string]> = [];
+		const resolved = await ompSettingsMenu(ui, {
+			title: "Antigravity provider",
+			subtitle: "",
+			rows: [
+				{ id: "engine", label: "Switch engine", currentValue: "acp" },
+				{ id: "digest", label: "Context digest", currentValue: "on", values: ["on", "off"] },
+			],
+			onChange: (id, value) => changes.push([id, value]),
+		});
+		expect(resolved).toBeUndefined();
+		expect(changes).toEqual([["digest", "off"], ["digest", "on"]]);
+		expect(shown.map((labels) => labels[1])).toEqual(["Context digest  on", "Context digest  off", "Context digest  on"]);
+		expect(shown[0]?.[0]).toBe("Switch engine   acp");
+	});
+
+	it("resolves a value-less row's id", async () => {
+		const ui = { select: async (_title: string, options: SelectOption[]) => options[0]?.label };
+		const rows = [{ id: "engine", label: "Switch engine", currentValue: "acp" }];
+		await expect(ompSettingsMenu(ui, { title: "t", subtitle: "", rows, onChange: () => {} })).resolves.toBe("engine");
 	});
 });
 

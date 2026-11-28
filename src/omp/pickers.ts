@@ -96,20 +96,22 @@ export interface OmpSettingsMenuOptions {
 
 /** The kit's DialogMenu on OMP's selector. Enter on a row with values cycles
  *  it in place (onChange) and reopens on that row; a value-less row resolves
- *  its id; esc resolves undefined. */
+ *  its id; esc resolves undefined. The current value rides in the label, in an
+ *  aligned column: OMP's selector hides option descriptions once the list
+ *  overflows its visible height, which a full settings menu always does. */
 export async function ompSettingsMenu(ui: object, menu: OmpSettingsMenuOptions): Promise<string | undefined> {
+	const width = Math.max(...menu.rows.map((row) => row.label.length));
 	let cursor = 0;
 	for (;;) {
-		const picked = await selectOmp(
-			ui,
-			`${menu.title}\n${menu.subtitle}`,
-			menu.rows.map((row) => ({
-				label: row.label,
-				description: [`current: ${row.currentValue}`, row.description].filter(Boolean).join(" — "),
-			})),
-			{ helpText: "enter cycle/open · esc close", initialIndex: cursor },
-		);
-		cursor = menu.rows.findIndex((row) => row.label === picked);
+		const options = menu.rows.map((row) => ({
+			label: `${row.label.padEnd(width)}  ${row.currentValue}`,
+			description: row.description,
+		}));
+		const picked = await selectOmp(ui, `${menu.title}\n${menu.subtitle}`, options, {
+			helpText: "enter cycle/open · esc close",
+			initialIndex: cursor,
+		});
+		cursor = options.findIndex((option) => option.label === picked);
 		const row = menu.rows[cursor];
 		if (!row) return undefined;
 		if (!row.values?.length) return row.id;
