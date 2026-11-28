@@ -20,7 +20,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { textRows, type RowsComponent } from "./rows.js";
 import { Type } from "typebox";
 import type { GateAskMode } from "../config.js";
 
@@ -88,7 +88,7 @@ export interface OmpApprovalToolDefinition {
 	approval: (args: unknown) => OmpApprovalDecision;
 	formatApprovalDetails: (args: unknown) => string[];
 	approvalCacheTargets: (args: unknown) => readonly string[] | undefined;
-	renderCall: (args: unknown, theme: ThemeLike) => Text;
+	renderCall: (args: unknown, theme: ThemeLike) => RowsComponent;
 	execute: (
 		toolCallId: string,
 		params: unknown,
@@ -233,12 +233,12 @@ function ompApprovalCacheTargets(args: unknown, cwd: string): readonly string[] 
 	return key === undefined ? undefined : [key];
 }
 
-function renderOmpApprovalCall(args: unknown, theme: ThemeLike): Text {
+function renderOmpApprovalCall(args: unknown, theme: ThemeLike): RowsComponent {
 	const a = readArgs(args);
 	const detail = a.tool === EXEC_NATIVE_TOOL ? a.command?.split(/\r?\n/, 1)[0]?.trim() : a.path;
 	let text = theme.fg("toolTitle", theme.bold(`Antigravity ${a.tool || "approval"}`));
 	if (detail) text += ` ${theme.fg("muted", detail.slice(0, MAX_ROW_DETAIL_CHARS))}`;
-	return new Text(text, 0, 0);
+	return textRows(text);
 }
 
 /** The bridge_call payload the provider pushes for a parked approval. */

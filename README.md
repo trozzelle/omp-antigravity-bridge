@@ -25,7 +25,7 @@ It uses your own Google account, so read the [terms of service](#terms-of-servic
 
   If `agy` is missing, the plugin offers to run Google's installer when you start OMP interactively. It looks for `agy` on `PATH`, or at `AGY_BIN`.
 
-Tested with OMP 19.1.0 and agy 1.5.14.
+Tested with OMP 19.2.1 and agy 1.5.14.
 
 ## Install
 

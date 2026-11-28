@@ -47,3 +47,7 @@ Changes this fork carries on top of upstream `@estebanforge/pi-antigravity-bridg
 - omp: keep the ACP idle guard from killing agy while one of its native tool calls is still open (agy sends no frames during a long foreground command); the turn waits up to 30 minutes of silence in that case, then stalls as before (acp) [upstreamable]
 - omp: a background-task watcher armed right after a turn ignores tasks that already finished in-turn (no holder, log idle), instead of waking the model to report them; reload re-arms still report tasks that finished while OMP was down (background) [upstreamable]
 - omp: write ACP and stream-json stall and timeout events to the default error-only log, keeping the toast (logging) [upstreamable]
+- omp: load on OMP 19.2, which refuses `@earendil-works/pi-tui` anywhere in an extension's import graph: tool and card renders return width-wrapped rows objects, the `/agy` settings menu, engine picker and artifact/task browsers use OMP's native selector, and the pi dialog kit loads only under pi (load)
+- omp: keep OMP 19.1 text wrapping by falling back from `/text/width` to the old root helper; CI tests 19.2.1 and the pi-only legacy modules are structurally typed (load)
+- omp: add the `smoke:pi` npm script the contributor guides document; it runs `scripts/smoke-in-pi.sh` (packaging) [upstreamable]
+- omp: show each `/agy` settings row's current value in its label on OMP 19.2: OMP's selector hides option descriptions once the list overflows, so Enter cycled values with no visible change (load)

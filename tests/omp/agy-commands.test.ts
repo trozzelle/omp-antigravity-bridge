@@ -129,6 +129,46 @@ describe("/agy tasks and /agy artifacts conversation resolution", () => {
 	});
 });
 
+describe("/agy settings on OMP 19.2", () => {
+	it("cycles a setting with the native selector, reopens on that row and saves it when the picker closes", async () => {
+		const notes: Array<{ message: string; level: string }> = [];
+		const answers = ["Context digest", undefined];
+		const selections: Array<Array<{ label: string; description?: string }>> = [];
+		const initialIndices: Array<number | undefined> = [];
+		const ui = {
+			notify: (message: string, level: string) => notes.push({ message, level }),
+			select: async (
+				_title: string,
+				options: Array<{ label: string; description?: string }>,
+				dialogOptions?: { initialIndex?: number },
+			) => {
+				selections.push(options);
+				initialIndices.push(dialogOptions?.initialIndex);
+				const prefix = answers.shift();
+				return prefix === undefined ? undefined : options.find(option => option.label.startsWith(`${prefix} `))?.label;
+			},
+		};
+		const agy = await loadAgyCommand();
+		await agy("", {
+			mode: "tui",
+			hasUI: true,
+			cwd: root,
+			ui,
+			sessionManager: { getSessionId: () => SESSION_ID, getEntries: () => [] },
+		});
+
+		expect(selections).toHaveLength(2);
+		const digestIndex = (labels: Array<{ label: string }> | undefined) =>
+			labels?.findIndex(option => option.label.startsWith("Context digest ")) ?? -1;
+		expect(selections[0]?.[digestIndex(selections[0])]?.label).toMatch(/^Context digest +on$/);
+		expect(selections[1]?.[digestIndex(selections[1])]?.label).toMatch(/^Context digest +off$/);
+		expect(initialIndices).toEqual([0, digestIndex(selections[1])]);
+		const savedConfig = JSON.parse(fs.readFileSync(path.join(root, "agent", "antigravity-bridge", "config.json"), "utf8"));
+		expect(savedConfig.digest).toBe(false);
+		expect(notes.some(note => note.message === "Saved: digest=off")).toBe(true);
+	});
+});
+
 describe("/agy tasks tail", () => {
 	it("/agy tasks tail <id> prints that task's log tail", async () => {
 		bindSession();
