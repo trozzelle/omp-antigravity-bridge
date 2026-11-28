@@ -73,6 +73,7 @@
     "test": "vitest run",
     "test:bun": "bunx --bun vitest run",
     "smoke:omp": "bash scripts/omp/smoke-load.sh",
+    "smoke:pi": "bash scripts/smoke-in-pi.sh",
     "build:bundle": "bun scripts/omp/build-bundle.mjs"
   },
   "devDependencies": {
