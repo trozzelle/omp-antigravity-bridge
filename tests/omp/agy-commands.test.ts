@@ -144,7 +144,8 @@ describe("/agy settings on OMP 19.2", () => {
 			) => {
 				selections.push(options);
 				initialIndices.push(dialogOptions?.initialIndex);
-				return answers.shift();
+				const prefix = answers.shift();
+				return prefix === undefined ? undefined : options.find(option => option.label.startsWith(`${prefix} `))?.label;
 			},
 		};
 		const agy = await loadAgyCommand();
@@ -157,9 +158,11 @@ describe("/agy settings on OMP 19.2", () => {
 		});
 
 		expect(selections).toHaveLength(2);
-		const digest = selections[1]?.find(option => option.label === "Context digest");
-		expect(digest?.description).toMatch(/\boff\b/);
-		expect(initialIndices).toEqual([0, selections[1]?.findIndex(option => option.label === "Context digest")]);
+		const digestIndex = (labels: Array<{ label: string }> | undefined) =>
+			labels?.findIndex(option => option.label.startsWith("Context digest ")) ?? -1;
+		expect(selections[0]?.[digestIndex(selections[0])]?.label).toMatch(/^Context digest +on$/);
+		expect(selections[1]?.[digestIndex(selections[1])]?.label).toMatch(/^Context digest +off$/);
+		expect(initialIndices).toEqual([0, digestIndex(selections[1])]);
 		const savedConfig = JSON.parse(fs.readFileSync(path.join(root, "agent", "antigravity-bridge", "config.json"), "utf8"));
 		expect(savedConfig.digest).toBe(false);
 		expect(notes.some(note => note.message === "Saved: digest=off")).toBe(true);
